@@ -346,12 +346,16 @@ class CustomToolService:
     def _register_global_tool(self, definition: ToolDefinitionModel) -> None:
         existing = self._global_tools.get(definition.name)
         if existing:
-            if existing.model_dump() != definition.model_dump():
-                logger.warning(
-                    "Custom tool '%s' already registered with a different schema; keeping existing definition.",
-                    definition.name,
-                )
-            return
+            if existing.model_dump() == definition.model_dump():
+                return
+            # Unity re-registers on every domain reload, so the newest definition is authoritative. Keeping the
+            # first one froze a tool's signature at its earliest version: after fixing a tool's parameters the
+            # server went on rejecting the arguments the tool now declares, until it was restarted.
+            logger.info(
+                "Custom tool '%s' re-registered with a changed schema — replacing the previous definition.",
+                definition.name,
+            )
+            self._unregister_global_tool(definition.name)
 
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
@@ -371,6 +375,28 @@ class CustomToolService:
             return
 
         self._global_tools[definition.name] = definition
+
+    def _unregister_global_tool(self, name: str) -> None:
+        """Drop a registered custom tool so it can be re-added with a new signature.
+
+        Tries the removal spellings FastMCP has used across the supported range (>=3.0.2,<4). If none exists,
+        the old tool keeps serving rather than being dropped from the registry while FastMCP still routes to it.
+        """
+        for attr in ("remove_tool", "unregister_tool", "delete_tool"):
+            remover = getattr(self._mcp, attr, None)
+            if not callable(remover):
+                continue
+            try:
+                remover(name)
+                self._global_tools.pop(name, None)
+                return
+            except Exception as exc:  # pragma: no cover - depends on FastMCP version
+                logger.debug("FastMCP.%s('%s') failed: %s", attr, name, exc)
+        logger.warning(
+            "Could not remove custom tool '%s' from FastMCP (no supported removal API); "
+            "its signature stays as first registered until the server restarts.",
+            name,
+        )
 
     def _build_global_tool_handler(self, definition: ToolDefinitionModel):
         async def _handler(ctx: Context, **kwargs) -> MCPResponse:
