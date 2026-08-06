@@ -544,8 +544,10 @@ class PluginHub(WebSocketEndpoint):
             service = CustomToolService.get_instance()
             service.register_global_tools(payload.tools)
         except RuntimeError as exc:
-            logger.debug(
-                "Skipping global custom tool registration: CustomToolService not initialized yet (%s)",
+            # Not a debug-level event: every custom tool the plugin registered is silently unavailable, and
+            # the only symptom the author sees is that none of their tools exist.
+            logger.warning(
+                "Custom tools NOT exposed — CustomToolService is not initialized (%s)",
                 exc,
             )
         except Exception as exc:
