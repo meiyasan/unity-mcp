@@ -331,14 +331,41 @@ class CustomToolService:
         # are enabled. Project-scoped tools can override globals by name, but
         # disabling globals entirely would break shared tooling that projects expect.
         builtin_names = self._get_builtin_tool_names()
+        exposed: list[str] = []
+        skipped: list[str] = []
         for tool in tools:
             if tool.name in builtin_names:
-                logger.info(
+                logger.debug(
                     "Skipping global custom tool registration for built-in tool '%s'",
                     tool.name,
                 )
                 continue
-            self._register_global_tool(tool)
+            # One malformed tool must not cost the plugin every other tool it registered. This loop used to
+            # let an exception escape to PluginHub, which logged "custom tools may not be available globally"
+            # and moved on — leaving the author staring at a plugin whose tools are all missing, with nothing
+            # to say which one was at fault.
+            try:
+                self._register_global_tool(tool)
+                exposed.append(tool.name)
+            except Exception as exc:
+                skipped.append(tool.name)
+                logger.warning(
+                    "Custom tool '%s' could not be registered and was skipped: %s",
+                    tool.name,
+                    exc,
+                )
+
+        # SAY WHAT HAPPENED. This path had no success log at all, so "no custom tools appeared" and "no custom
+        # tools were offered" were indistinguishable from the outside — and the only failure log was a generic
+        # one in PluginHub that named nothing. An operator should be able to answer "did the server expose my
+        # tools?" from the log alone.
+        if exposed or skipped:
+            logger.info(
+                "Custom tools exposed globally: %d (%s)%s",
+                len(exposed),
+                ", ".join(exposed) if exposed else "none",
+                f" — skipped {len(skipped)}: {', '.join(skipped)}" if skipped else "",
+            )
 
     def _get_builtin_tool_names(self) -> set[str]:
         return {tool["name"] for tool in get_registered_tools()}
@@ -360,6 +387,23 @@ class CustomToolService:
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
         wrapped = telemetry_tool(definition.name)(wrapped)
+
+        # RE-STAMP THE OUTERMOST CALLABLE. This is what actually kept custom tools from being exposed.
+        #
+        # The handler is given a synthetic __signature__/__annotations__ so FastMCP can see the plugin's
+        # parameters. Both decorators above use functools.wraps, which copies __wrapped__ but leaves the
+        # wrapper's OWN __annotations__ empty. inspect.signature follows __wrapped__ and therefore reports the
+        # right signature — which is why this looked correct from every angle — but FastMCP builds its schema
+        # with pydantic's TypeAdapter, which reads the wrapper's real annotations and raises KeyError on the
+        # first parameter name. The tool was then dropped with a one-line warning and no traceback.
+        #
+        # So: put the signature on the object FastMCP is actually handed, and drop __wrapped__ so nothing
+        # resolves back to a function with a different one. Verified against fastmcp 3.0.2 — without this a
+        # two-parameter tool fails to register; with it, it registers and exposes both parameters.
+        wrapped.__signature__ = self._build_signature(definition)
+        wrapped.__annotations__ = self._build_annotations(definition)
+        if hasattr(wrapped, "__wrapped__"):
+            del wrapped.__wrapped__
 
         try:
             wrapped = self._mcp.tool(
@@ -439,6 +483,16 @@ class CustomToolService:
                 annotation=Context,
             )
         ]
+        # Required parameters first. Python forbids a non-default argument after a defaulted one, and the
+        # incoming order is whatever the plugin happened to declare (in the Unity package that is C# reflection
+        # order, which is not even guaranteed). A tool author has no reason to know this rule, and getting it
+        # wrong raised ValueError out of register_global_tools and took the WHOLE BATCH of custom tools with
+        # it — one tool with its optional argument listed first, and none of the plugin's tools appeared.
+        # Sorting is stable, so the author's order survives within each group.
+        ordered = sorted(
+            (p for p in definition.parameters if p.name.isidentifier()),
+            key=lambda p: not p.required,
+        )
         for param in definition.parameters:
             if not param.name.isidentifier():
                 logger.warning(
@@ -446,7 +500,7 @@ class CustomToolService:
                     definition.name,
                     param.name,
                 )
-                continue
+        for param in ordered:
             default = inspect._empty if param.required else self._coerce_default(
                 param.default_value, param.type)
             params.append(
