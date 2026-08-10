@@ -124,6 +124,32 @@ async def test_plugin_hub_refuses_sole_survivor_after_recent_disconnect():
 
 
 @pytest.mark.asyncio
+async def test_recent_disconnects_survive_server_restart():
+    """Disconnect records persist to disk and are reloaded by a fresh server process."""
+    import time as time_module
+
+    from transport.plugin_hub import PluginHub
+
+    # "Old" server process records a drop and mirrors it to disk.
+    PluginHub._recent_disconnects_loaded = True
+    PluginHub._recent_disconnects["bbb222"] = ("Chapaland", time_module.monotonic())
+    PluginHub._save_recent_disconnects()
+
+    # Simulate a server restart: in-memory state gone, lazy load re-arms.
+    PluginHub._recent_disconnects.clear()
+    PluginHub._recent_disconnects_loaded = False
+
+    assert PluginHub.recently_disconnected_instances() == ["Chapaland@bbb222"]
+
+    # Re-registration clears the record on disk too.
+    PluginHub._clear_recent_disconnect("bbb222")
+    PluginHub._recent_disconnects.clear()
+    PluginHub._recent_disconnects_loaded = False
+
+    assert PluginHub.recently_disconnected_instances() == []
+
+
+@pytest.mark.asyncio
 async def test_plugin_hub_fails_after_timeout():
     """Test that PluginHub._resolve_session_id eventually times out if plugin never reconnects."""
     from transport.plugin_hub import PluginHub
