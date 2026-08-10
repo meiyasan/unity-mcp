@@ -25,6 +25,10 @@ async def test_auto_selects_single_instance_via_pluginhub(monkeypatch):
         async def get_sessions(cls):
             raise AssertionError("get_sessions should be stubbed in test")
 
+        @classmethod
+        def recently_disconnected_instances(cls):
+            return []
+
     plugin_hub.PluginHub = PluginHub
     monkeypatch.setitem(sys.modules, "transport.plugin_hub", plugin_hub)
     monkeypatch.delitem(sys.modules, "transport.unity_instance_middleware", raising=False)
@@ -54,13 +58,15 @@ async def test_auto_selects_single_instance_via_pluginhub(monkeypatch):
     selected = await middleware._maybe_autoselect_instance(ctx)
 
     assert selected == "Ramble@deadbeef"
-    assert await middleware.get_active_instance(ctx) == "Ramble@deadbeef"
+    # Auto-selection is per-call only; it must not stick as the session pin.
+    assert await middleware.get_active_instance(ctx) is None
     assert call_count["sessions"] == 1
 
     await middleware._inject_unity_instance(middleware_context)
 
     assert await ctx.get_state("unity_instance") == "Ramble@deadbeef"
-    assert call_count["sessions"] == 1
+    # Injection re-discovered rather than reading a persisted pin.
+    assert call_count["sessions"] == 2
 
 
 @pytest.mark.asyncio
@@ -98,11 +104,53 @@ async def test_auto_selects_single_instance_via_stdio(monkeypatch):
     selected = await middleware._maybe_autoselect_instance(ctx)
 
     assert selected == "UnityMCPTests@cc8756d4"
-    assert await middleware.get_active_instance(ctx) == "UnityMCPTests@cc8756d4"
+    # Auto-selection is per-call only; it must not stick as the session pin.
+    assert await middleware.get_active_instance(ctx) is None
 
     await middleware._inject_unity_instance(middleware_context)
 
     assert await ctx.get_state("unity_instance") == "UnityMCPTests@cc8756d4"
+
+
+@pytest.mark.asyncio
+async def test_no_autoselect_while_another_bridge_recently_disconnected(monkeypatch):
+    plugin_hub = types.ModuleType("transport.plugin_hub")
+
+    class PluginHub:
+        @classmethod
+        def is_configured(cls) -> bool:
+            return True
+
+        @classmethod
+        async def get_sessions(cls):
+            return SimpleNamespace(
+                sessions={
+                    "session-1": SimpleNamespace(project="Playground", hash="aaaa1111"),
+                }
+            )
+
+        @classmethod
+        def recently_disconnected_instances(cls):
+            return ["Chapaland@bbbb2222"]
+
+    plugin_hub.PluginHub = PluginHub
+    monkeypatch.setitem(sys.modules, "transport.plugin_hub", plugin_hub)
+    monkeypatch.delitem(sys.modules, "transport.unity_instance_middleware", raising=False)
+
+    from transport.unity_instance_middleware import UnityInstanceMiddleware, PluginHub as ImportedPluginHub
+    assert ImportedPluginHub is plugin_hub.PluginHub
+
+    monkeypatch.setattr(config, "transport_mode", "http")
+
+    middleware = UnityInstanceMiddleware()
+    ctx = DummyContext()
+    ctx.client_id = "client-1"
+
+    selected = await middleware._maybe_autoselect_instance(ctx)
+
+    # The sole survivor may be the wrong editor while another bridge restarts.
+    assert selected is None
+    assert await middleware.get_active_instance(ctx) is None
 
 
 @pytest.mark.asyncio

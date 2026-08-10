@@ -69,6 +69,61 @@ async def test_plugin_hub_waits_for_reconnection_during_reload():
 
 
 @pytest.mark.asyncio
+async def test_plugin_hub_refuses_sole_survivor_after_recent_disconnect():
+    """A recently-disconnected bridge blocks auto-routing to the sole remaining session."""
+    import time as time_module
+
+    from transport.plugin_hub import PluginHub, InstanceSelectionRequiredError
+    from transport.plugin_registry import PluginRegistry, PluginSession
+
+    mock_registry = AsyncMock(spec=PluginRegistry)
+    now = datetime.now()
+    survivor = PluginSession(
+        session_id="sess-playground",
+        project_name="Playground",
+        project_hash="aaa111",
+        unity_version="6000.0.0f1",
+        registered_at=now,
+        connected_at=now,
+    )
+
+    async def mock_list_sessions(**kwargs):
+        return {"sess-playground": survivor}
+
+    mock_registry.list_sessions = mock_list_sessions
+    mock_registry.get_session_id_by_hash = AsyncMock(return_value="sess-playground")
+
+    original_registry = PluginHub._registry
+    original_lock = PluginHub._lock
+    original_recent = dict(PluginHub._recent_disconnects)
+    PluginHub._registry = mock_registry
+    PluginHub._lock = asyncio.Lock()
+    PluginHub._recent_disconnects["bbb222"] = ("Chapaland", time_module.monotonic())
+
+    try:
+        # Unpinned call: refuse to guess while Chapaland may be restarting.
+        with pytest.raises(InstanceSelectionRequiredError) as excinfo:
+            await PluginHub._resolve_session_id(unity_instance=None)
+        assert "Chapaland@bbb222" in str(excinfo.value)
+        assert excinfo.value.available_instances == ["Playground@aaa111"]
+
+        # Explicit targeting is unaffected.
+        session_id = await PluginHub._resolve_session_id(unity_instance="aaa111")
+        assert session_id == "sess-playground"
+
+        # Once the disconnect record clears (re-register or grace expiry),
+        # sole-instance auto-routing resumes.
+        PluginHub._recent_disconnects.clear()
+        session_id = await PluginHub._resolve_session_id(unity_instance=None)
+        assert session_id == "sess-playground"
+    finally:
+        PluginHub._registry = original_registry
+        PluginHub._lock = original_lock
+        PluginHub._recent_disconnects.clear()
+        PluginHub._recent_disconnects.update(original_recent)
+
+
+@pytest.mark.asyncio
 async def test_plugin_hub_fails_after_timeout():
     """Test that PluginHub._resolve_session_id eventually times out if plugin never reconnects."""
     from transport.plugin_hub import PluginHub

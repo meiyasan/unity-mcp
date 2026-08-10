@@ -702,7 +702,8 @@ class TestAutoSelectInstance:
     async def test_autoselect_via_plugin_hub_single_instance(self, mock_context):
         """
         Current behavior: When single instance is available via PluginHub,
-        auto-select it and store in middleware state.
+        auto-select it for the current call WITHOUT persisting it as the
+        session pin (a transient sole-survivor guess must never stick).
         """
         middleware = UnityInstanceMiddleware()
 
@@ -725,7 +726,7 @@ class TestAutoSelectInstance:
                 instance = await middleware._maybe_autoselect_instance(mock_context)
 
         assert instance == "TestProject@abc123"
-        assert await middleware.get_active_instance(mock_context) == "TestProject@abc123"
+        assert await middleware.get_active_instance(mock_context) is None
 
     @pytest.mark.asyncio
     async def test_autoselect_fails_with_multiple_instances(self, mock_context):
