@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 import uuid
 import weakref
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from starlette.endpoints import WebSocketEndpoint
@@ -154,6 +156,10 @@ class PluginHub(WebSocketEndpoint):
     # How long a disconnect keeps blocking auto-selection. Long editor restarts
     # (domain reload + asset import) can take minutes.
     DISCONNECT_GRACE_DEFAULT_S = 600.0
+    # Disconnect records are mirrored to disk (wall-clock timestamps) so a
+    # server restart doesn't forget a bridge that dropped moments earlier.
+    RECENT_DISCONNECTS_FILENAME = "recent-disconnects.json"
+    _recent_disconnects_loaded: ClassVar[bool] = False
 
     @classmethod
     def configure(
@@ -247,6 +253,71 @@ class PluginHub(WebSocketEndpoint):
         except Exception as e:
             logger.error(f"Error handling message type {message_type}: {e}")
 
+    @staticmethod
+    def _state_dir() -> Path:
+        override = os.environ.get("UNITY_MCP_STATE_DIR")
+        return Path(override) if override else Path.home() / ".unity-mcp"
+
+    @classmethod
+    def _recent_disconnects_file(cls) -> Path:
+        return cls._state_dir() / cls.RECENT_DISCONNECTS_FILENAME
+
+    @classmethod
+    def _load_recent_disconnects(cls) -> None:
+        """Merge disconnect records persisted by a previous server process.
+
+        The file stores wall-clock timestamps; in-memory records use monotonic
+        time, so ages are converted at the boundary. In-memory entries win over
+        persisted ones.
+        """
+        if cls._recent_disconnects_loaded:
+            return
+        cls._recent_disconnects_loaded = True
+        try:
+            raw = json.loads(cls._recent_disconnects_file().read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        if not isinstance(raw, dict):
+            return
+        now_wall = time.time()
+        now_mono = time.monotonic()
+        for project_hash, entry in raw.items():
+            if project_hash in cls._recent_disconnects or not isinstance(entry, dict):
+                continue
+            try:
+                age_s = max(0.0, now_wall - float(entry.get("dropped_at", 0.0)))
+            except (TypeError, ValueError):
+                continue
+            name = entry.get("name") or "Unknown"
+            cls._recent_disconnects[project_hash] = (name, now_mono - age_s)
+
+    @classmethod
+    def _save_recent_disconnects(cls) -> None:
+        try:
+            now_wall = time.time()
+            now_mono = time.monotonic()
+            payload = {
+                project_hash: {
+                    "name": name,
+                    "dropped_at": now_wall - (now_mono - dropped_mono),
+                }
+                for project_hash, (name, dropped_mono) in cls._recent_disconnects.items()
+            }
+            target = cls._recent_disconnects_file()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(payload))
+            tmp.replace(target)
+        except Exception:
+            logger.debug("Failed to persist recent-disconnect records", exc_info=True)
+
+    @classmethod
+    def _clear_recent_disconnect(cls, project_hash: str) -> None:
+        """Forget a disconnect record once the same project re-registers."""
+        cls._load_recent_disconnects()
+        if cls._recent_disconnects.pop(project_hash, None) is not None:
+            cls._save_recent_disconnects()
+
     @classmethod
     async def _record_disconnect(cls, session_id: str) -> None:
         """Remember which project just lost its bridge, before it is unregistered."""
@@ -260,7 +331,9 @@ class PluginHub(WebSocketEndpoint):
         project_hash = getattr(session, "project_hash", None) if session else None
         if project_hash:
             project_name = getattr(session, "project_name", None) or "Unknown"
+            cls._load_recent_disconnects()
             cls._recent_disconnects[project_hash] = (project_name, time.monotonic())
+            cls._save_recent_disconnects()
 
     @classmethod
     def recently_disconnected_instances(cls) -> list[str]:
@@ -269,6 +342,7 @@ class PluginHub(WebSocketEndpoint):
         Prunes expired entries as a side effect. Entries are cleared early when
         the same project re-registers.
         """
+        cls._load_recent_disconnects()
         grace_s = _read_bounded_wait_env(
             "UNITY_MCP_DISCONNECT_GRACE_S",
             default_s=cls.DISCONNECT_GRACE_DEFAULT_S,
@@ -282,6 +356,8 @@ class PluginHub(WebSocketEndpoint):
         ]
         for project_hash in expired:
             cls._recent_disconnects.pop(project_hash, None)
+        if expired:
+            cls._save_recent_disconnects()
         return sorted(
             f"{name}@{project_hash}"
             for project_hash, (name, _) in cls._recent_disconnects.items()
@@ -502,7 +578,7 @@ class PluginHub(WebSocketEndpoint):
 
         session, evicted_session_id = await registry.register(session_id, project_name, project_hash, unity_version, project_path, user_id=user_id)
         # This project's bridge is back; stop blocking auto-selection on its account.
-        cls._recent_disconnects.pop(project_hash, None)
+        cls._clear_recent_disconnect(project_hash)
         evicted_ws = None
         async with lock:
             # Clean up the evicted session's connection, ping loop, and pending commands
