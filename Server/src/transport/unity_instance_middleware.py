@@ -216,9 +216,11 @@ class UnityInstanceMiddleware(Middleware):
         """
         Auto-select the sole Unity instance when no active instance is set.
 
-        Note: This method both *discovers* and *persists* the selection via
-        `set_active_instance` as a side-effect, since callers expect the selection
-        to stick for subsequent tool/resource calls in the same session.
+        The selection applies to the current call only and is deliberately NOT
+        persisted as the session pin: a transient sole-survivor guess (e.g. while
+        another editor's bridge restarts) must never stick and silently reroute
+        later calls (#1023 family). Re-discovery on subsequent calls is cheap.
+        It also declines to guess while another bridge disconnected recently.
         """
         try:
             transport = (config.transport_mode or "stdio").lower()
@@ -238,9 +240,20 @@ class UnityInstanceMiddleware(Middleware):
                             ids.append(f"{project}@{hash_value}")
                     if len(ids) == 1:
                         chosen = ids[0]
-                        await self.set_active_instance(ctx, chosen)
+                        ghosts = [
+                            ghost for ghost in PluginHub.recently_disconnected_instances()
+                            if ghost != chosen
+                        ]
+                        if ghosts:
+                            logger.info(
+                                "Not auto-selecting sole Unity instance %s: recently "
+                                "disconnected instance(s) %s may be restarting. "
+                                "Pass unity_instance or call set_active_instance.",
+                                chosen, ", ".join(ghosts),
+                            )
+                            return None
                         logger.info(
-                            "Auto-selected sole Unity instance via PluginHub: %s",
+                            "Auto-selected sole Unity instance via PluginHub (this call only): %s",
                             chosen,
                         )
                         return chosen
@@ -276,9 +289,8 @@ class UnityInstanceMiddleware(Middleware):
                     ids = [inst_id for inst_id in ids if inst_id]
                     if len(ids) == 1:
                         chosen = ids[0]
-                        await self.set_active_instance(ctx, chosen)
                         logger.info(
-                            "Auto-selected sole Unity instance via stdio discovery: %s",
+                            "Auto-selected sole Unity instance via stdio discovery (this call only): %s",
                             chosen,
                         )
                         return chosen
