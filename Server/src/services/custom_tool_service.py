@@ -145,6 +145,12 @@ class CustomToolService:
                 message=f"Tool '{tool_name}' not found for project {project_id}",
             )
 
+        # Custom tools are frequently long-running (captures, ground-truth grading,
+        # batch imports), so the hub's default 30s command budget times them out
+        # while they are still working. Give them a generous default; callers can
+        # still override with an explicit timeout_seconds parameter (up to 3600).
+        params.setdefault("timeout_seconds", 300)
+
         response = await send_with_unity_instance(
             async_send_command_with_retry,
             unity_instance,
@@ -209,8 +215,13 @@ class CustomToolService:
             if time.time() > deadline:
                 return MCPResponse(
                     success=False,
-                    message=f"Timeout waiting for {tool_name} to complete",
+                    message=(
+                        f"Timeout waiting for {tool_name} to complete. The operation may "
+                        "still be running in Unity — do not assume it finished or failed; "
+                        "verify its effects before continuing."
+                    ),
                     data=self._safe_response(response),
+                    hint="retry",
                 )
 
             await asyncio.sleep(poll_interval)
@@ -274,6 +285,7 @@ class CustomToolService:
                 error=response.get("error"),
                 data=response.get(
                     "data", response) if "data" not in response else response["data"],
+                hint=response.get("hint"),
             )
 
         success = True
