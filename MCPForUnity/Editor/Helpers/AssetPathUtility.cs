@@ -7,6 +7,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
 using PackageInfo = UnityEditor.PackageManager.PackageInfo;
+using PackageSource = UnityEditor.PackageManager.PackageSource;
 
 namespace MCPForUnity.Editor.Helpers
 {
@@ -226,6 +227,17 @@ namespace MCPForUnity.Editor.Helpers
                 return resolved;
             }
 
+            // Development install (package consumed from disk via file:/embedded): the
+            // repo checkout carries the matching Python server next to the package, so
+            // prefer it over PyPI. Without this, a lost EditorPrefs override (e.g. a
+            // force-killed editor never flushes prefs on macOS) silently relaunched the
+            // shared HTTP server from PyPI, replacing a locally patched build.
+            string devServerPath = TryGetDevServerPathNextToPackage();
+            if (!string.IsNullOrEmpty(devServerPath))
+            {
+                return devServerPath;
+            }
+
             // Default to PyPI package (avoids Windows long path issues with git clone)
             string version = GetPackageVersion();
             if (version == "unknown")
@@ -242,6 +254,53 @@ namespace MCPForUnity.Editor.Helpers
             }
 
             return $"mcpforunityserver=={version}";
+        }
+
+        /// <summary>
+        /// When the MCPForUnity package itself is consumed from disk (file: reference or
+        /// embedded), returns the absolute path of the sibling "Server" directory from the
+        /// same checkout if it contains pyproject.toml; otherwise null. Registry and
+        /// tarball installs always return null.
+        /// </summary>
+        internal static string TryGetDevServerPathNextToPackage()
+        {
+            try
+            {
+                var packageInfo = PackageInfo.FindForAssembly(typeof(AssetPathUtility).Assembly);
+                if (packageInfo == null)
+                {
+                    return null;
+                }
+
+                if (packageInfo.source != PackageSource.Local && packageInfo.source != PackageSource.Embedded)
+                {
+                    return null;
+                }
+
+                string packageDir = packageInfo.resolvedPath;
+                if (string.IsNullOrEmpty(packageDir))
+                {
+                    return null;
+                }
+
+                string repoRoot = Path.GetDirectoryName(Path.GetFullPath(packageDir));
+                if (string.IsNullOrEmpty(repoRoot))
+                {
+                    return null;
+                }
+
+                string serverDir = Path.Combine(repoRoot, "Server");
+                if (File.Exists(Path.Combine(serverDir, "pyproject.toml")))
+                {
+                    return serverDir;
+                }
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"Dev server path detection failed: {ex.Message}");
+            }
+
+            return null;
         }
 
         /// <summary>
