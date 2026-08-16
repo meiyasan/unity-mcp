@@ -186,7 +186,21 @@ namespace MCPForUnity.Editor.Services.Transport
 
             if (_mainThreadContext != null && Thread.CurrentThread.ManagedThreadId != _mainThreadId)
             {
-                _mainThreadContext.Post(_ => Pump(), null);
+                // Unity drains the synchronization context from inside a player loop
+                // iteration, so anything run here must not drive the player loop itself.
+                _mainThreadContext.Post(_ =>
+                {
+                    var previous = MCPForUnity.Runtime.Helpers.ScreenshotUtility.InsidePlayerLoop;
+                    MCPForUnity.Runtime.Helpers.ScreenshotUtility.InsidePlayerLoop = true;
+                    try
+                    {
+                        Pump();
+                    }
+                    finally
+                    {
+                        MCPForUnity.Runtime.Helpers.ScreenshotUtility.InsidePlayerLoop = previous;
+                    }
+                }, null);
                 return;
             }
 

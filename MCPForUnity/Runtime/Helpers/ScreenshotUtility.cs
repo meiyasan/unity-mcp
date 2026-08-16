@@ -166,11 +166,31 @@ namespace MCPForUnity.Runtime.Helpers
             return result;
         }
 
+        /// <summary>
+        /// Set while executing inside Unity's player loop, where driving the player loop again
+        /// is illegal.
+        ///
+        /// The transport dispatcher pumps queued commands via the main-thread synchronization
+        /// context, and Unity drains that context from *within* a player loop iteration. A
+        /// screenshot arriving that way would call EditorApplication.Step() -- which runs a
+        /// player loop iteration -- while one is already on the stack, and Unity aborts with
+        /// "the PlayerLoop internal function has been called recursively". Capture then falls
+        /// back to the camera path, which needs no frame to be driven.
+        /// </summary>
+        public static bool InsidePlayerLoop { get; set; }
+
 #if UNITY_EDITOR
         // Synchronously drive a WaitForEndOfFrame ScreenshotCapturer by pumping the editor's
         // player loop. Play-mode only; EditorApplication.Step is a no-op in edit mode.
+        // Returns null when it cannot safely drive a frame, which the caller treats as
+        // "composited capture unavailable" and handles by falling back to camera capture.
         private static Texture2D CaptureCompositedAfterFrame(int superSize, int timeoutSteps = 5)
         {
+            if (InsidePlayerLoop)
+            {
+                return null;
+            }
+
             Texture2D result = null;
             bool done = false;
             bool callerReturned = false;
