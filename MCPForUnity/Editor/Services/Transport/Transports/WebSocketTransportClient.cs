@@ -395,7 +395,14 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 }
                 catch (WebSocketException wse)
                 {
-                    McpLog.Warn($"[WebSocket] Receive loop error: {wse.Message}");
+                    // A remote close without the handshake is the NORMAL way this socket dies: the
+                    // server drops us whenever the editor blocks its main thread (import batch,
+                    // domain reload, long tool). HandleSocketClosureAsync logs the one visible line
+                    // and reconnects; a second stack-bearing warning here was pure console spam.
+                    if (IsExpectedRemoteClose(wse))
+                        McpLog.Info($"[WebSocket] Receive loop ended: {wse.Message}", always: false);
+                    else
+                        McpLog.Warn($"[WebSocket] Receive loop error: {wse.Message}");
                     await HandleSocketClosureAsync(wse.Message).ConfigureAwait(false);
                     break;
                 }
@@ -683,7 +690,13 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 }
                 catch (Exception ex)
                 {
-                    McpLog.Warn($"[WebSocket] Keep-alive failed: {ex.Message}");
+                    // Same expected-close treatment as the receive loop: a pong that failed because
+                    // the server already dropped a blocked editor's socket is routine, and
+                    // HandleSocketClosureAsync prints the one calm line about it.
+                    if (ex is WebSocketException kw && IsExpectedRemoteClose(kw))
+                        McpLog.Info($"[WebSocket] Keep-alive ended: {kw.Message}", always: false);
+                    else
+                        McpLog.Warn($"[WebSocket] Keep-alive failed: {ex.Message}");
                     await HandleSocketClosureAsync(ex.Message).ConfigureAwait(false);
                     break;
                 }
@@ -760,12 +773,28 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
             _isConnected = false;
             _state = _state.WithError(reason ?? "Connection closed");
-            McpLog.Warn($"[WebSocket] Connection closed: {reason}");
+            // The overwhelmingly common closure is the server dropping a socket the blocked editor
+            // could not service (import/compile/long tool). That is expected behaviour with an
+            // automatic recovery — say so in one calm line instead of a yellow warning, so a frozen
+            // UX does not come back to a console full of alarming-looking stacks.
+            if (reason != null && reason.IndexOf("without completing the close handshake", StringComparison.OrdinalIgnoreCase) >= 0)
+                McpLog.Info("[WebSocket] Server closed the connection while the editor was busy (normal during imports/compiles/long tools) — reconnecting automatically.");
+            else
+                McpLog.Warn($"[WebSocket] Connection closed: {reason}");
 
             await StopConnectionLoopsAsync(awaitTasks: false).ConfigureAwait(false);
 
             _ = Task.Run(() => AttemptReconnectAsync(_lifecycleCts.Token), CancellationToken.None);
         }
+
+        /// <summary>
+        /// True for the closure signature produced when the SERVER drops a socket the editor could
+        /// not service because its main thread was blocked (import batch, domain reload, long
+        /// tool). Expected + auto-recovered, so it must not read like a fault in the console.
+        /// </summary>
+        private static bool IsExpectedRemoteClose(WebSocketException wse) =>
+            wse.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely
+            || (wse.Message != null && wse.Message.IndexOf("without completing the close handshake", StringComparison.OrdinalIgnoreCase) >= 0);
 
         private async Task AttemptReconnectAsync(CancellationToken token)
         {
