@@ -109,7 +109,10 @@ namespace MCPForUnity.Editor.Tools
         {
             try
             {
-                return type.GetCustomAttribute<T>() != null;
+                // IsDefined, not GetCustomAttribute: on Mono, GetCustomAttribute<T> builds EVERY attribute of the
+                // type and then filters, and this runs over every type of every loaded assembly on each domain
+                // reload (~65 MB of garbage per scan, three scans per reload). IsDefined answers from metadata.
+                return type.IsDefined(typeof(T), true);
             }
             catch
             {

@@ -38,7 +38,7 @@ namespace MCPForUnity.Editor.Services
                         return new Type[0];
                     }
                 })
-                .Where(t => t.GetCustomAttribute<McpForUnityToolAttribute>() != null);
+                .Where(t => IsToolType(t));
 
             // Merge both scans, deduplicating by type
             var allToolTypes = toolTypes
@@ -256,6 +256,15 @@ namespace MCPForUnity.Editor.Services
         private static string GetToolPreferenceKey(string toolName)
         {
             return EditorPrefKeys.ToolEnabledPrefix + toolName;
+        }
+
+        // IsDefined, not GetCustomAttribute: on Mono, GetCustomAttribute<T> builds EVERY attribute of the type and
+        // then filters, and the fallback scan runs it over every type of every loaded assembly after each domain
+        // reload (~65 MB of garbage per scan). IsDefined answers from metadata.
+        private static bool IsToolType(Type type)
+        {
+            try { return type.IsDefined(typeof(McpForUnityToolAttribute), true); }
+            catch { return false; }
         }
 
     }
