@@ -70,6 +70,32 @@ async def test_execute_tool_defaults_long_timeout(monkeypatch):
         "proj-1", "long_running_tool", "Playground@abc", {"timeout_seconds": 900})
     assert seen_params["timeout_seconds"] == 900
 
+    # So must the camelCase spelling the hub also honors: no snake_case default beside it.
+    seen_params.clear()
+    await service.execute_tool(
+        "proj-1", "long_running_tool", "Playground@abc", {"timeoutSeconds": 1200})
+    assert seen_params == {"timeoutSeconds": 1200}
+
+
+@pytest.mark.asyncio
+async def test_polling_deadline_does_not_suggest_resubmitting(monkeypatch):
+    """At the polling deadline the operation may still run: say so, and do not hint a retry."""
+    service = _make_service()
+
+    async def still_running(_send_fn, _instance, _command, params, **kwargs):  # noqa: ARG001
+        return {"_mcp_status": "pending", "message": "working"}
+
+    monkeypatch.setattr(
+        "services.custom_tool_service.send_with_unity_instance", still_running)
+
+    result = await service._poll_until_complete(
+        "long_running_tool", "Playground@abc", {}, {"_mcp_status": "pending"}, "status",
+        max_poll_seconds=0.01)
+
+    assert result.success is False
+    assert "may still be running" in result.message
+    assert result.hint is None
+
 
 @pytest.mark.asyncio
 async def test_transport_timeout_error_is_self_explanatory(monkeypatch):
