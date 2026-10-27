@@ -383,9 +383,11 @@ class CustomToolService:
         """Expose a custom tool through FastMCP.
 
         Returns whether FastMCP serves the tool afterwards: this definition, an identical one already there,
-        or the previous one kept because it could not be removed. False when FastMCP refused it.
+        or the previous one, kept because it could not be removed or restored because FastMCP refused this one.
+        False when FastMCP serves neither.
         """
         existing = self._global_tools.get(definition.name)
+        replaced = None
         if existing:
             if existing.model_dump() == definition.model_dump():
                 return True
@@ -400,6 +402,7 @@ class CustomToolService:
                 # Registering on top of a tool FastMCP still routes would leave the two out of step; the
                 # previous definition keeps serving (warned about in _unregister_global_tool).
                 return True
+            replaced = existing
 
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
@@ -433,6 +436,9 @@ class CustomToolService:
                 definition.name,
                 exc,
             )
+            if replaced is not None:
+                # The previous definition was already removed: put it back rather than lose a working tool.
+                return self._register_global_tool(replaced)
             return False
 
         self._global_tools[definition.name] = definition
