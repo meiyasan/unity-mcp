@@ -7,6 +7,7 @@ discover the arguments are wrong, fix them, and the server goes on rejecting the
 declares. Only a server restart cleared it, and nothing in the symptom pointed there.
 """
 
+import pytest
 from unittest.mock import Mock
 
 from models.models import ToolDefinitionModel, ToolParameterModel
@@ -189,3 +190,58 @@ def test_wrapped_handler_keeps_its_declared_parameters():
     assert not hasattr(fn, "__wrapped__"), "__wrapped__ must not point at a differently-shaped function"
     assert sorted(k for k in fn.__annotations__ if k != "return") == ["ctx", "frame", "name"]
     assert [p for p in _inspect.signature(fn).parameters if p != "ctx"] == ["name", "frame"]
+
+
+def test_a_refused_replacement_restores_the_previous_tool():
+    """When FastMCP refuses the new schema after the old tool was removed, the old one is put back."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    assert service._register_global_tool(_definition([]))
+
+    real_tool = mcp.tool
+    refuse = {"name"}
+
+    def picky_tool(name=None, description=None):
+        if refuse:
+            refuse.clear()
+            raise ValueError("schema rejected")
+        return real_tool(name=name, description=description)
+
+    mcp.tool = picky_tool
+
+    assert service._register_global_tool(_definition(["name"]))
+    assert mcp.removed == ["my_tool"]
+    assert mcp.added == ["my_tool", "my_tool"]  # first registration, then the restored one
+    assert service._global_tools["my_tool"].model_dump() == _definition([]).model_dump()
+
+
+@pytest.mark.asyncio
+async def test_clients_are_notified_after_custom_tools_are_registered(monkeypatch):
+    """The tool-list notification follows registration, so a client re-fetch sees the new signatures."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from transport.models import RegisterToolsMessage
+    from transport.plugin_hub import PluginHub
+
+    order: list[str] = []
+    websocket = object()
+    registry = MagicMock()
+    registry.register_tools_for_session = AsyncMock()
+    monkeypatch.setattr(PluginHub, "_registry", registry)
+    monkeypatch.setattr(PluginHub, "_lock", asyncio.Lock())
+    monkeypatch.setattr(PluginHub, "_connections", {"session-1": websocket})
+    monkeypatch.setattr(PluginHub, "_sync_server_tool_visibility", classmethod(lambda cls, tools: None))
+
+    async def notify(cls):
+        order.append("notify")
+
+    monkeypatch.setattr(PluginHub, "_notify_mcp_tool_list_changed", classmethod(notify))
+    service = MagicMock()
+    service.register_global_tools = lambda tools: order.append("register")
+    monkeypatch.setattr(CustomToolService, "get_instance", classmethod(lambda cls: service))
+
+    hub = PluginHub.__new__(PluginHub)
+    await hub._handle_register_tools(websocket, RegisterToolsMessage(type="register_tools", tools=[_definition(["name"])]))
+
+    assert order == ["register", "notify"]
