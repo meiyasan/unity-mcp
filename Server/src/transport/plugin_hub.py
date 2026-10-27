@@ -257,7 +257,7 @@ class PluginHub(WebSocketEndpoint):
     @staticmethod
     def _state_dir() -> Path:
         override = os.environ.get("UNITY_MCP_STATE_DIR")
-        return Path(override) if override else Path.home() / ".unity-mcp"
+        return Path(override).expanduser() if override else Path.home() / ".unity-mcp"
 
     @classmethod
     def _recent_disconnects_file(cls) -> Path:
@@ -275,8 +275,10 @@ class PluginHub(WebSocketEndpoint):
             return
         cls._recent_disconnects_loaded = True
         try:
-            raw = json.loads(cls._recent_disconnects_file().read_text())
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            raw = json.loads(cls._recent_disconnects_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # ValueError covers a JSONDecodeError and a UnicodeDecodeError: a damaged file must never
+            # escape into on_disconnect or registration, where it would skip unregister/register.
             return
         if not isinstance(raw, dict):
             return
@@ -307,7 +309,7 @@ class PluginHub(WebSocketEndpoint):
             target = cls._recent_disconnects_file()
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(payload))
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
             tmp.replace(target)
         except Exception:
             logger.debug("Failed to persist recent-disconnect records", exc_info=True)

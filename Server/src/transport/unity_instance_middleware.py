@@ -408,6 +408,11 @@ class UnityInstanceMiddleware(Middleware):
             await ctx.set_state("unity_instance", active_instance)
             if session_id is not None:
                 await ctx.set_state("unity_session_id", session_id)
+        else:
+            # The state store is session-scoped: without this, a previous call's instance (an
+            # auto-selected sole survivor, say) would still route this call after auto-selection
+            # declined. Every call overwrites it, so a per-call choice never outlives its call.
+            await ctx.set_state("unity_instance", None)
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         """Inject active Unity instance into tool context if available."""

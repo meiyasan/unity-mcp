@@ -149,6 +149,27 @@ async def test_recent_disconnects_survive_server_restart():
     assert PluginHub.recently_disconnected_instances() == []
 
 
+@pytest.mark.parametrize("content", [b"\xff\xfe not utf-8", b"{not json", b"[1, 2]"])
+def test_damaged_recent_disconnects_file_is_ignored(content):
+    """A damaged state file is skipped: the persistence layer never affects routing."""
+    from transport.plugin_hub import PluginHub
+
+    target = PluginHub._recent_disconnects_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+
+    assert PluginHub.recently_disconnected_instances() == []
+
+
+def test_state_dir_override_expands_home(monkeypatch, tmp_path):
+    from transport.plugin_hub import PluginHub
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("UNITY_MCP_STATE_DIR", "~/unity-mcp-state")
+
+    assert PluginHub._state_dir() == tmp_path / "unity-mcp-state"
+
+
 @pytest.mark.asyncio
 async def test_plugin_hub_fails_after_timeout():
     """Test that PluginHub._resolve_session_id eventually times out if plugin never reconnects."""

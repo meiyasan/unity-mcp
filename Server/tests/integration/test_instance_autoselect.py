@@ -154,6 +154,57 @@ async def test_no_autoselect_while_another_bridge_recently_disconnected(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_declined_autoselect_clears_the_previous_calls_instance(monkeypatch):
+    plugin_hub = types.ModuleType("transport.plugin_hub")
+
+    class PluginHub:
+        ghosts: list[str] = []
+
+        @classmethod
+        def is_configured(cls) -> bool:
+            return True
+
+        @classmethod
+        async def get_sessions(cls):
+            return SimpleNamespace(
+                sessions={
+                    "session-1": SimpleNamespace(project="Playground", hash="aaaa1111"),
+                }
+            )
+
+        @classmethod
+        def recently_disconnected_instances(cls):
+            return list(cls.ghosts)
+
+        @classmethod
+        async def _resolve_session_id(cls, unity_instance, user_id=None):
+            return "session-1"
+
+    plugin_hub.PluginHub = PluginHub
+    monkeypatch.setitem(sys.modules, "transport.plugin_hub", plugin_hub)
+    monkeypatch.delitem(sys.modules, "transport.unity_instance_middleware", raising=False)
+
+    from transport.unity_instance_middleware import UnityInstanceMiddleware
+
+    monkeypatch.setattr(config, "transport_mode", "http")
+
+    middleware = UnityInstanceMiddleware()
+    ctx = DummyContext()
+    ctx.client_id = "client-1"
+    middleware_context = DummyMiddlewareContext(ctx)
+
+    # First call: the sole instance is auto-selected for this call.
+    await middleware._inject_unity_instance(middleware_context)
+    assert await ctx.get_state("unity_instance") == "Playground@aaaa1111"
+
+    # Next call on the same session: another bridge just dropped, so auto-selection declines.
+    # The state store is session-scoped; the first call's instance must not route this one.
+    PluginHub.ghosts = ["Sandbox@bbbb2222"]
+    await middleware._inject_unity_instance(middleware_context)
+    assert await ctx.get_state("unity_instance") is None
+
+
+@pytest.mark.asyncio
 async def test_auto_select_handles_stdio_errors(monkeypatch):
     plugin_hub = types.ModuleType("transport.plugin_hub")
 

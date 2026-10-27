@@ -245,7 +245,8 @@ class TestUnityInstanceMiddlewareInjection:
     async def test_middleware_does_not_inject_when_no_instance(self, mock_context):
         """
         Current behavior: When no active instance is set and auto-select fails,
-        middleware does not inject anything (None instance not stored).
+        middleware stores None, so an instance left in the session-scoped state by
+        an earlier call cannot route this one.
         """
         middleware = UnityInstanceMiddleware()
 
@@ -261,10 +262,10 @@ class TestUnityInstanceMiddlewareInjection:
             with patch("transport.legacy.unity_connection.get_unity_connection_pool", return_value=None):
                 await middleware.on_call_tool(middleware_ctx, mock_call_next)
 
-        # set_state should not be called for unity_instance if no instance found
+        # unity_instance is cleared (None), never left at an earlier call's value
         calls = [c for c in mock_context.set_state.call_args_list
                 if len(c[0]) > 0 and c[0][0] == "unity_instance"]
-        assert len(calls) == 0
+        assert [c[0][1] for c in calls] == [None]
 
     @pytest.mark.asyncio
     async def test_list_tools_filters_disabled_unity_tools_and_aliases(self, mock_context, monkeypatch):
