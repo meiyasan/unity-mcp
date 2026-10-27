@@ -155,8 +155,10 @@ class CustomToolService:
         # Custom tools are frequently long-running (captures, image comparison,
         # batch imports), so the hub's default 30s command budget times them out
         # while they are still working. Give them a generous default; callers can
-        # still override with an explicit timeout_seconds parameter (up to 3600).
-        params.setdefault("timeout_seconds", 300)
+        # still override with an explicit timeout_seconds (or timeoutSeconds) parameter, up to 3600.
+        # The hub reads timeout_seconds first, so a default added beside a caller's timeoutSeconds would win.
+        if "timeout_seconds" not in params and "timeoutSeconds" not in params:
+            params["timeout_seconds"] = 300
 
         response = await send_with_unity_instance(
             async_send_command_with_retry,
@@ -228,7 +230,7 @@ class CustomToolService:
                         "verify its effects before continuing."
                     ),
                     data=self._safe_response(response),
-                    hint="retry",
+                    # No retry hint: the operation may still be running, and resubmitting it could run it twice.
                 )
 
             await asyncio.sleep(poll_interval)
