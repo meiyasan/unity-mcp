@@ -352,8 +352,10 @@ class CustomToolService:
             # and moved on — leaving the author staring at a plugin whose tools are all missing, with nothing
             # to say which one was at fault.
             try:
-                self._register_global_tool(tool)
-                exposed.append(tool.name)
+                if self._register_global_tool(tool):
+                    exposed.append(tool.name)
+                else:
+                    skipped.append(tool.name)
             except Exception as exc:
                 skipped.append(tool.name)
                 logger.warning(
@@ -377,11 +379,16 @@ class CustomToolService:
     def _get_builtin_tool_names(self) -> set[str]:
         return {tool["name"] for tool in get_registered_tools()}
 
-    def _register_global_tool(self, definition: ToolDefinitionModel) -> None:
+    def _register_global_tool(self, definition: ToolDefinitionModel) -> bool:
+        """Expose a custom tool through FastMCP.
+
+        Returns whether FastMCP serves the tool afterwards: this definition, an identical one already there,
+        or the previous one kept because it could not be removed. False when FastMCP refused it.
+        """
         existing = self._global_tools.get(definition.name)
         if existing:
             if existing.model_dump() == definition.model_dump():
-                return
+                return True
             # Unity re-registers on every domain reload, so the newest definition is authoritative. Keeping the
             # first one froze a tool's signature at its earliest version: after fixing a tool's parameters the
             # server went on rejecting the arguments the tool now declares, until it was restarted.
@@ -389,7 +396,10 @@ class CustomToolService:
                 "Custom tool '%s' re-registered with a changed schema — replacing the previous definition.",
                 definition.name,
             )
-            self._unregister_global_tool(definition.name)
+            if not self._unregister_global_tool(definition.name):
+                # Registering on top of a tool FastMCP still routes would leave the two out of step; the
+                # previous definition keeps serving (warned about in _unregister_global_tool).
+                return True
 
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
@@ -423,15 +433,17 @@ class CustomToolService:
                 definition.name,
                 exc,
             )
-            return
+            return False
 
         self._global_tools[definition.name] = definition
+        return True
 
-    def _unregister_global_tool(self, name: str) -> None:
+    def _unregister_global_tool(self, name: str) -> bool:
         """Drop a registered custom tool so it can be re-added with a new signature.
 
         Tries the removal spellings FastMCP has used across the supported range (>=3.0.2,<4). If none exists,
         the old tool keeps serving rather than being dropped from the registry while FastMCP still routes to it.
+        Returns whether the tool was removed.
         """
         for attr in ("remove_tool", "unregister_tool", "delete_tool"):
             remover = getattr(self._mcp, attr, None)
@@ -440,7 +452,7 @@ class CustomToolService:
             try:
                 remover(name)
                 self._global_tools.pop(name, None)
-                return
+                return True
             except Exception as exc:  # pragma: no cover - depends on FastMCP version
                 logger.debug("FastMCP.%s('%s') failed: %s", attr, name, exc)
         logger.warning(
@@ -448,6 +460,7 @@ class CustomToolService:
             "its signature stays as first registered until the server restarts.",
             name,
         )
+        return False
 
     def _build_global_tool_handler(self, definition: ToolDefinitionModel):
         async def _handler(ctx: Context, **kwargs) -> MCPResponse:

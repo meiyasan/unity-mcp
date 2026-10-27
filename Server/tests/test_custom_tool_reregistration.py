@@ -79,11 +79,32 @@ def test_missing_removal_api_keeps_the_old_tool_rather_than_losing_it():
     mcp = _RecordingMcp(supports_removal=False)
     service = CustomToolService(mcp, project_scoped_tools=False)
 
-    service._register_global_tool(_definition([]))
-    service._register_global_tool(_definition(["name"]))
+    assert service._register_global_tool(_definition([]))
+    assert service._register_global_tool(_definition(["name"]))
 
-    assert mcp.added == ["my_tool", "my_tool"]
-    assert "my_tool" in service._global_tools
+    # The new schema is not registered on top of the tool FastMCP still routes: the first one keeps serving.
+    assert mcp.added == ["my_tool"]
+    assert service._global_tools["my_tool"].model_dump() == _definition([]).model_dump()
+
+
+def test_a_tool_fastmcp_refuses_is_reported_as_skipped(caplog):
+    """Only tools FastMCP accepted count as exposed in the summary."""
+    mcp = _RecordingMcp()
+
+    def refusing_tool(name=None, description=None):  # noqa: ARG001
+        raise ValueError("conflict")
+
+    mcp.tool = refusing_tool
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+
+    with caplog.at_level("INFO"):
+        service.register_global_tools([_definition(["name"])])
+
+    assert "my_tool" not in service._global_tools
+    summary = [r.getMessage() for r in caplog.records if "Custom tools exposed globally" in r.getMessage()]
+    assert summary and summary[-1].startswith("Custom tools exposed globally: 0 (none)")
+    assert "skipped 1: my_tool" in summary[-1]
 
 
 def test_optional_parameter_declared_first_does_not_break_registration():
