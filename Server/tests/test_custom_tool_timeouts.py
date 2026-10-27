@@ -120,3 +120,26 @@ async def test_transport_timeout_error_is_self_explanatory(monkeypatch):
     assert "timeout_seconds" in response["error"]
     assert response["hint"] == "retry"
     assert response["data"] == {"reason": "unity_timeout"}
+
+
+@pytest.mark.asyncio
+async def test_each_poll_waits_no_longer_than_the_remaining_budget(monkeypatch):
+    """A poll must not inherit the tool's 300 s command budget past the polling deadline."""
+    service = _make_service()
+    seen: list[dict] = []
+
+    async def complete(_send_fn, _instance, _command, params, **kwargs):  # noqa: ARG001
+        seen.append(dict(params))
+        return {"_mcp_status": "complete", "success": True, "message": "done"}
+
+    monkeypatch.setattr(
+        "services.custom_tool_service.send_with_unity_instance", complete)
+
+    result = await service._poll_until_complete(
+        "long_running_tool", "Playground@abc", {"timeout_seconds": 300, "timeoutSeconds": 300},
+        {"_mcp_status": "pending", "_mcp_poll_interval": 0.01}, "status", max_poll_seconds=5)
+
+    assert result.success is True
+    assert seen and 0 < seen[0]["timeout_seconds"] <= 5
+    assert "timeoutSeconds" not in seen[0]
+    assert seen[0]["action"] == "status"

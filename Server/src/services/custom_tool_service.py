@@ -235,6 +235,12 @@ class CustomToolService:
 
             await asyncio.sleep(poll_interval)
 
+            # A poll inherits the tool's parameters, including its long command budget (300 s by default):
+            # left as is, one status poll could wait far past this polling deadline. Give each poll what is
+            # left of the budget instead (the hub still waits at least its 30 s default).
+            poll_params.pop("timeoutSeconds", None)
+            poll_params["timeout_seconds"] = max(1.0, deadline - time.time())
+
             try:
                 response = await send_with_unity_instance(
                     async_send_command_with_retry,
