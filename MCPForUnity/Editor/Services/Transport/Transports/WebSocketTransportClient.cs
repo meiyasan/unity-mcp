@@ -397,13 +397,12 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 {
                     // A remote close without the handshake is the NORMAL way this socket dies: the
                     // server drops us whenever the editor blocks its main thread (import batch,
-                    // domain reload, long tool). HandleSocketClosureAsync logs the one visible line
-                    // and reconnects; a second stack-bearing warning here was pure console spam.
-                    if (IsExpectedRemoteClose(wse))
-                        McpLog.Info($"[WebSocket] Receive loop ended: {wse.Message}", always: false);
-                    else
+                    // domain reload, long tool). HandleSocketClosureAsync logs the one line about it
+                    // and reconnects, so only an unexpected error is reported here as well.
+                    bool expectedClose = IsExpectedRemoteClose(wse);
+                    if (!expectedClose)
                         McpLog.Warn($"[WebSocket] Receive loop error: {wse.Message}");
-                    await HandleSocketClosureAsync(wse.Message, IsExpectedRemoteClose(wse)).ConfigureAwait(false);
+                    await HandleSocketClosureAsync(wse.Message, expectedClose).ConfigureAwait(false);
                     break;
                 }
                 catch (Exception ex)
@@ -694,9 +693,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                     // the server already dropped a blocked editor's socket is routine, and
                     // HandleSocketClosureAsync prints the one calm line about it.
                     bool expectedClose = ex is WebSocketException kw && IsExpectedRemoteClose(kw);
-                    if (expectedClose)
-                        McpLog.Info($"[WebSocket] Keep-alive ended: {ex.Message}", always: false);
-                    else
+                    if (!expectedClose)
                         McpLog.Warn($"[WebSocket] Keep-alive failed: {ex.Message}");
                     await HandleSocketClosureAsync(ex.Message, expectedClose).ConfigureAwait(false);
                     break;
