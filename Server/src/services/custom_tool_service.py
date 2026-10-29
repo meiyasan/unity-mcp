@@ -69,6 +69,8 @@ class CustomToolService:
         self._project_tools: dict[str, dict[str, ToolDefinitionModel]] = {}
         self._hash_to_project: dict[str, str] = {}
         self._global_tools: dict[str, ToolDefinitionModel] = {}
+        # Project hashes that registered each global tool's current definition.
+        self._global_tool_owners: dict[str, set[str]] = {}
         self._register_http_routes()
 
     @classmethod
@@ -326,14 +328,24 @@ class CustomToolService:
             self._register_tool(project_id, tool)
             registered.append(tool.name)
             if not self._project_scoped_tools:
-                self._register_global_tool(tool)
+                self._register_global_tool(tool, owner=project_hash)
 
         if project_hash:
             self._hash_to_project[project_hash.lower()] = project_id
 
         return registered, replaced
 
-    def register_global_tools(self, tools: list[ToolDefinitionModel]) -> None:
+    def register_global_tools(
+        self,
+        tools: list[ToolDefinitionModel],
+        owner: str | None = None,
+        live_owners: set[str] | None = None,
+    ) -> None:
+        """Expose a plugin's custom tools through FastMCP.
+
+        ``owner`` is the registering project's hash and ``live_owners`` the hashes of every connected
+        project; together they decide whether a changed schema may replace the one being served.
+        """
         # Global custom tools are always registered, even when project-scoped tools
         # are enabled. Project-scoped tools can override globals by name, but
         # disabling globals entirely would break shared tooling that projects expect.
@@ -352,7 +364,7 @@ class CustomToolService:
             # and moved on — leaving the author staring at a plugin whose tools are all missing, with nothing
             # to say which one was at fault.
             try:
-                if self._register_global_tool(tool):
+                if self._register_global_tool(tool, owner=owner, live_owners=live_owners):
                     exposed.append(tool.name)
                 else:
                     skipped.append(tool.name)
@@ -379,17 +391,44 @@ class CustomToolService:
     def _get_builtin_tool_names(self) -> set[str]:
         return {tool["name"] for tool in get_registered_tools()}
 
-    def _register_global_tool(self, definition: ToolDefinitionModel) -> bool:
+    def _register_global_tool(
+        self,
+        definition: ToolDefinitionModel,
+        owner: str | None = None,
+        live_owners: set[str] | None = None,
+    ) -> bool:
         """Expose a custom tool through FastMCP.
 
         Returns whether FastMCP serves the tool afterwards: this definition, an identical one already there,
-        or the previous one, kept because it could not be removed or restored because FastMCP refused this one.
-        False when FastMCP serves neither.
+        or the previous one, kept because another connected project serves it, because it could not be
+        removed, or restored because FastMCP refused this one. False when FastMCP serves neither.
         """
+        owner = owner.lower() if owner else None
         existing = self._global_tools.get(definition.name)
         replaced = None
+        previous_owners: set[str] = set()
         if existing:
             if existing.model_dump() == definition.model_dump():
+                if owner:
+                    self._global_tool_owners.setdefault(definition.name, set()).add(owner)
+                return True
+            # FastMCP serves one schema per tool name, and validates a call against it before the handler
+            # routes it to a project. Replacing the definition another connected project registered would make
+            # that project's calls fail validation, and two such projects reloading in turn would swap it back
+            # and forth; keep it, as before. Owners no longer connected do not count.
+            previous_owners = self._global_tool_owners.get(definition.name, set())
+            others = previous_owners - {owner} if owner else set(previous_owners)
+            if live_owners is not None:
+                others &= {h.lower() for h in live_owners}
+            if others:
+                logger.warning(
+                    "Custom tool '%s' from project %s declares a different schema than connected project(s) %s; "
+                    "keeping theirs (one schema per tool name is served). Call this project's version through "
+                    "execute_custom_tool.",
+                    definition.name,
+                    owner or "(unknown)",
+                    ", ".join(sorted(others)),
+                )
                 return True
             # Unity re-registers on every domain reload, so the newest definition is authoritative. Keeping the
             # first one froze a tool's signature at its earliest version: after fixing a tool's parameters the
@@ -438,10 +477,14 @@ class CustomToolService:
             )
             if replaced is not None:
                 # The previous definition was already removed: put it back rather than lose a working tool.
-                return self._register_global_tool(replaced)
+                restored = self._register_global_tool(replaced)
+                if restored:
+                    self._global_tool_owners[definition.name] = previous_owners
+                return restored
             return False
 
         self._global_tools[definition.name] = definition
+        self._global_tool_owners[definition.name] = {owner} if owner else set()
         return True
 
     def _unregister_global_tool(self, name: str) -> bool:
