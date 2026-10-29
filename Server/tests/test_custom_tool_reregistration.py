@@ -215,50 +215,75 @@ def test_a_refused_replacement_restores_the_previous_tool():
     assert service._global_tools["my_tool"].model_dump() == _definition([]).model_dump()
 
 
-@pytest.mark.asyncio
-async def test_clients_are_notified_after_custom_tools_are_registered(monkeypatch):
-    """The tool-list notification follows registration, so a client re-fetch sees the new signatures."""
+async def _register_tools_through_the_hub(monkeypatch, sessions: list[dict], from_session: str):
+    """Drive PluginHub._handle_register_tools over a real PluginRegistry; return the call order and the
+    owner arguments the service received."""
     import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
 
     from transport.models import RegisterToolsMessage
     from transport.plugin_hub import PluginHub
+    from transport.plugin_registry import PluginRegistry
+
+    registry = PluginRegistry()
+    for s in sessions:
+        await registry.register(s["session_id"], "Playground", s["project_hash"], "6000.0", user_id=s.get("user_id"))
 
     order: list[str] = []
     websocket = object()
-    registry = MagicMock()
-    registry.register_tools_for_session = AsyncMock()
-    registry.get_session = AsyncMock(return_value=SimpleNamespace(project_hash="aaaa1111"))
-    registry.list_sessions = AsyncMock(return_value={
-        "session-1": SimpleNamespace(project_hash="aaaa1111"),
-        "session-2": SimpleNamespace(project_hash="bbbb2222"),
-    })
     monkeypatch.setattr(PluginHub, "_registry", registry)
     monkeypatch.setattr(PluginHub, "_lock", asyncio.Lock())
-    monkeypatch.setattr(PluginHub, "_connections", {"session-1": websocket})
+    monkeypatch.setattr(PluginHub, "_connections", {from_session: websocket})
     monkeypatch.setattr(PluginHub, "_sync_server_tool_visibility", classmethod(lambda cls, tools: None))
 
     async def notify(cls):
         order.append("notify")
 
     monkeypatch.setattr(PluginHub, "_notify_mcp_tool_list_changed", classmethod(notify))
-    service = MagicMock()
     seen: dict = {}
 
     def register(tools, owner=None, live_owners=None):
         order.append("register")
         seen.update(owner=owner, live_owners=live_owners)
 
+    service = Mock()
     service.register_global_tools = register
     monkeypatch.setattr(CustomToolService, "get_instance", classmethod(lambda cls: service))
 
     hub = PluginHub.__new__(PluginHub)
     await hub._handle_register_tools(websocket, RegisterToolsMessage(type="register_tools", tools=[_definition(["name"])]))
+    return order, seen
+
+
+@pytest.mark.asyncio
+async def test_clients_are_notified_after_custom_tools_are_registered(monkeypatch):
+    """The tool-list notification follows registration, so a client re-fetch sees the new signatures."""
+    order, seen = await _register_tools_through_the_hub(
+        monkeypatch,
+        [{"session_id": "session-1", "project_hash": "aaaa1111"},
+         {"session_id": "session-2", "project_hash": "bbbb2222"}],
+        "session-1",
+    )
 
     assert order == ["register", "notify"]
     assert seen == {"owner": "aaaa1111", "live_owners": {"aaaa1111", "bbbb2222"}}
 
+
+@pytest.mark.asyncio
+async def test_remote_hosted_registration_still_exposes_tools(monkeypatch):
+    """In remote-hosted mode list_sessions refuses a call without a user; the hub must still register the
+    tools, judging ownership across every user, since global tool names are shared by all of them."""
+    from core.config import config
+
+    monkeypatch.setattr(config, "http_remote_hosted", True)
+    order, seen = await _register_tools_through_the_hub(
+        monkeypatch,
+        [{"session_id": "session-1", "project_hash": "aaaa1111", "user_id": "user-a"},
+         {"session_id": "session-2", "project_hash": "aaaa1111", "user_id": "user-b"}],
+        "session-1",
+    )
+
+    assert order == ["register", "notify"]
+    assert seen == {"owner": "user-a/aaaa1111", "live_owners": {"user-a/aaaa1111", "user-b/aaaa1111"}}
 
 def test_another_connected_projects_schema_is_kept():
     """FastMCP serves one schema per tool name and validates calls against it before routing them to a project.
