@@ -5,6 +5,10 @@ from types import SimpleNamespace
 
 from .test_helpers import DummyContext
 from core.config import config
+# The middleware imports transport.unity_transport lazily; load it now, against the real
+# plugin_hub, so that import never resolves against a test's stub (which lacks
+# InstanceSelectionRequiredError) when a test here runs on its own.
+import transport.unity_transport  # noqa: F401
 
 
 class DummyMiddlewareContext:
