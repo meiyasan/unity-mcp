@@ -166,3 +166,63 @@ async def test_a_hung_poll_is_cut_off_at_the_polling_deadline(monkeypatch):
     assert result.success is False
     assert "Timeout waiting for long_running_tool" in result.message
     assert elapsed < 2.0
+
+
+@pytest.mark.asyncio
+async def test_a_stdio_poll_stops_its_worker_thread_at_the_polling_deadline(monkeypatch):
+    """On stdio the poll runs in an executor thread that a cancelled wait cannot stop. It must be given the
+    remaining budget, so the thread itself ends at the polling deadline and releases the connection."""
+    import time
+
+    import transport.legacy.unity_connection as unity_connection
+
+    calls: list[dict] = []
+
+    class _BlockingConnection:
+        def send_command(self, command_type, params, max_attempts=None, deadline=None):  # noqa: ARG002
+            call = {"deadline": deadline, "ended": None}
+            calls.append(call)
+            started = time.monotonic()
+            # Block like a wedged socket would, until the deadline the caller allows (5 s at most here).
+            time.sleep(min(5.0, max(0.0, (deadline or started + 5.0) - started)))
+            call["ended"] = time.monotonic()
+            return {"_mcp_status": "pending", "_mcp_poll_interval": 0.01}
+
+    monkeypatch.setattr(config, "transport_mode", "stdio")
+    monkeypatch.setattr(unity_connection, "get_unity_connection", lambda instance_id=None: _BlockingConnection())
+
+    service = _make_service()
+    started = time.monotonic()
+    result = await service._poll_until_complete(
+        "long_running_tool", None, {},
+        {"_mcp_status": "pending", "_mcp_poll_interval": 0.01}, "status", max_poll_seconds=1)
+    await asyncio.sleep(0.2)  # let a thread still blocked past the deadline (the bug) record itself
+
+    assert result.success is False
+    assert calls, "the poll must have reached the stdio connection"
+    assert all(c["deadline"] is not None and c["deadline"] <= started + 1.5 for c in calls)
+    assert all(c["ended"] is not None and c["ended"] <= started + 1.5 for c in calls), "a poll thread outlived the deadline"
+
+
+def test_budget_only_shortens_the_configured_command_deadline(monkeypatch):
+    import time
+
+    import transport.legacy.unity_connection as unity_connection
+
+    deadlines: list[float] = []
+
+    class _Connection:
+        def send_command(self, command_type, params, max_attempts=None, deadline=None):  # noqa: ARG002
+            deadlines.append(deadline - time.monotonic())
+            return {"success": True}
+
+    monkeypatch.setattr(unity_connection, "get_unity_connection", lambda instance_id=None: _Connection())
+    monkeypatch.setattr(config, "command_total_timeout", 90.0)
+
+    unity_connection.send_command_with_retry("x", {}, budget_s=2.0)
+    unity_connection.send_command_with_retry("x", {}, budget_s=500.0)
+    unity_connection.send_command_with_retry("x", {})
+
+    assert deadlines[0] <= 2.0
+    assert 85.0 < deadlines[1] <= 90.0
+    assert 85.0 < deadlines[2] <= 90.0

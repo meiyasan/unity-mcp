@@ -240,8 +240,12 @@ class CustomToolService:
             # A poll inherits the tool's parameters, including its long command budget (300 s by default):
             # left as is, one status poll could wait far past this polling deadline. Give each poll what is
             # left of the budget instead. The hub still waits at least its 30 s default for any command,
-            # so the wait itself is also cut off at the deadline here.
+            # so the wait itself is also cut off at the deadline here. On stdio the poll runs in a worker
+            # thread that a cancelled wait cannot stop, so it is given the same budget (budget_s) and
+            # ends by itself, releasing the connection.
             remaining = max(0.0, deadline - time.time())
+            if remaining <= 0:
+                continue
             poll_params.pop("timeoutSeconds", None)
             poll_params["timeout_seconds"] = max(1.0, remaining)
 
@@ -253,6 +257,7 @@ class CustomToolService:
                         tool_name,
                         poll_params,
                         user_id=user_id,
+                        budget_s=remaining,
                     ),
                     timeout=remaining,
                 )
