@@ -219,6 +219,7 @@ def test_a_refused_replacement_restores_the_previous_tool():
 async def test_clients_are_notified_after_custom_tools_are_registered(monkeypatch):
     """The tool-list notification follows registration, so a client re-fetch sees the new signatures."""
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
     from transport.models import RegisterToolsMessage
@@ -228,6 +229,11 @@ async def test_clients_are_notified_after_custom_tools_are_registered(monkeypatc
     websocket = object()
     registry = MagicMock()
     registry.register_tools_for_session = AsyncMock()
+    registry.get_session = AsyncMock(return_value=SimpleNamespace(project_hash="aaaa1111"))
+    registry.list_sessions = AsyncMock(return_value={
+        "session-1": SimpleNamespace(project_hash="aaaa1111"),
+        "session-2": SimpleNamespace(project_hash="bbbb2222"),
+    })
     monkeypatch.setattr(PluginHub, "_registry", registry)
     monkeypatch.setattr(PluginHub, "_lock", asyncio.Lock())
     monkeypatch.setattr(PluginHub, "_connections", {"session-1": websocket})
@@ -238,10 +244,61 @@ async def test_clients_are_notified_after_custom_tools_are_registered(monkeypatc
 
     monkeypatch.setattr(PluginHub, "_notify_mcp_tool_list_changed", classmethod(notify))
     service = MagicMock()
-    service.register_global_tools = lambda tools: order.append("register")
+    seen: dict = {}
+
+    def register(tools, owner=None, live_owners=None):
+        order.append("register")
+        seen.update(owner=owner, live_owners=live_owners)
+
+    service.register_global_tools = register
     monkeypatch.setattr(CustomToolService, "get_instance", classmethod(lambda cls: service))
 
     hub = PluginHub.__new__(PluginHub)
     await hub._handle_register_tools(websocket, RegisterToolsMessage(type="register_tools", tools=[_definition(["name"])]))
 
     assert order == ["register", "notify"]
+    assert seen == {"owner": "aaaa1111", "live_owners": {"aaaa1111", "bbbb2222"}}
+
+
+def test_another_connected_projects_schema_is_kept():
+    """FastMCP serves one schema per tool name and validates calls against it before routing them to a project.
+    A second connected project declaring the same tool differently must not take it from the first: the first
+    project's calls would fail validation, and two editors reloading in turn would swap it back and forth."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    live = {"aaaa1111", "bbbb2222"}
+
+    assert service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners=live)
+    assert service._register_global_tool(_definition(["path"]), owner="bbbb2222", live_owners=live)
+
+    assert mcp.removed == []
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+
+
+def test_the_owning_project_still_replaces_its_schema_beside_another_project():
+    """A project sharing an identical definition becomes a co-owner; the domain reload of either one that changes
+    the schema is then refused while the other is connected, and allowed once it is gone."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+
+    service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners={"aaaa1111"})
+    service._register_global_tool(_definition(["name"]), owner="bbbb2222", live_owners={"aaaa1111", "bbbb2222"})
+    service._register_global_tool(_definition(["path"]), owner="aaaa1111", live_owners={"aaaa1111", "bbbb2222"})
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+
+    service._register_global_tool(_definition(["path"]), owner="aaaa1111", live_owners={"aaaa1111"})
+    assert mcp.removed == ["my_tool"]
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+
+
+def test_a_disconnected_projects_schema_gives_way():
+    """An owner that is no longer connected does not hold the name: the next project's schema replaces it."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+
+    service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners={"aaaa1111"})
+    service._register_global_tool(_definition(["path"]), owner="bbbb2222", live_owners={"bbbb2222"})
+
+    assert mcp.removed == ["my_tool"]
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+    assert service._global_tool_owners["my_tool"] == {"bbbb2222"}

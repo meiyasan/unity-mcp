@@ -672,7 +672,15 @@ class PluginHub(WebSocketEndpoint):
             from services.custom_tool_service import CustomToolService
 
             service = CustomToolService.get_instance()
-            service.register_global_tools(payload.tools)
+            # Which project registers, and which are connected: a changed schema replaces the served one only
+            # when no other connected project registered it.
+            session = await registry.get_session(session_id)
+            live_owners = {s.project_hash for s in (await registry.list_sessions()).values()}
+            service.register_global_tools(
+                payload.tools,
+                owner=session.project_hash if session else None,
+                live_owners=live_owners,
+            )
         except RuntimeError as exc:
             # Not a debug-level event: every custom tool the plugin registered is silently unavailable, and
             # the only symptom the author sees is that none of their tools exist.
