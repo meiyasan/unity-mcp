@@ -403,7 +403,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                         McpLog.Info($"[WebSocket] Receive loop ended: {wse.Message}", always: false);
                     else
                         McpLog.Warn($"[WebSocket] Receive loop error: {wse.Message}");
-                    await HandleSocketClosureAsync(wse.Message).ConfigureAwait(false);
+                    await HandleSocketClosureAsync(wse.Message, IsExpectedRemoteClose(wse)).ConfigureAwait(false);
                     break;
                 }
                 catch (Exception ex)
@@ -693,11 +693,12 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                     // Same expected-close treatment as the receive loop: a pong that failed because
                     // the server already dropped a blocked editor's socket is routine, and
                     // HandleSocketClosureAsync prints the one calm line about it.
-                    if (ex is WebSocketException kw && IsExpectedRemoteClose(kw))
-                        McpLog.Info($"[WebSocket] Keep-alive ended: {kw.Message}", always: false);
+                    bool expectedClose = ex is WebSocketException kw && IsExpectedRemoteClose(kw);
+                    if (expectedClose)
+                        McpLog.Info($"[WebSocket] Keep-alive ended: {ex.Message}", always: false);
                     else
                         McpLog.Warn($"[WebSocket] Keep-alive failed: {ex.Message}");
-                    await HandleSocketClosureAsync(ex.Message).ConfigureAwait(false);
+                    await HandleSocketClosureAsync(ex.Message, expectedClose).ConfigureAwait(false);
                     break;
                 }
             }
@@ -755,7 +756,11 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             }
         }
 
-        private async Task HandleSocketClosureAsync(string reason)
+        /// <param name="expectedClose">
+        /// The caller's <see cref="IsExpectedRemoteClose"/> verdict on the exception, which also
+        /// sees the error code; callers without one fall back to the message check.
+        /// </param>
+        private async Task HandleSocketClosureAsync(string reason, bool expectedClose = false)
         {
             // Capture stack trace for debugging disconnection triggers
             var stackTrace = new System.Diagnostics.StackTrace(true);
@@ -773,12 +778,12 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
             _isConnected = false;
             _state = _state.WithError(reason ?? "Connection closed");
-            // The overwhelmingly common closure is the server dropping a socket the blocked editor
-            // could not service (import/compile/long tool). That is expected behaviour with an
-            // automatic recovery — say so in one calm line instead of a yellow warning, so a frozen
-            // UX does not come back to a console full of alarming-looking stacks.
-            if (reason != null && reason.IndexOf("without completing the close handshake", StringComparison.OrdinalIgnoreCase) >= 0)
-                McpLog.Info("[WebSocket] Server closed the connection while the editor was busy (normal during imports/compiles/long tools) — reconnecting automatically.");
+            // A close without the handshake is most often the server dropping a socket the blocked
+            // editor could not service (import/compile/long tool), but the socket alone cannot tell
+            // that from a server crash or a network failure. Report what happened and that recovery
+            // is automatic in one calm line instead of a yellow warning, without naming a cause.
+            if (expectedClose || IsHandshakelessCloseMessage(reason))
+                McpLog.Info("[WebSocket] Connection closed without completing the close handshake — reconnecting automatically.");
             else
                 McpLog.Warn($"[WebSocket] Connection closed: {reason}");
 
@@ -794,7 +799,10 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         /// </summary>
         private static bool IsExpectedRemoteClose(WebSocketException wse) =>
             wse.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely
-            || (wse.Message != null && wse.Message.IndexOf("without completing the close handshake", StringComparison.OrdinalIgnoreCase) >= 0);
+            || IsHandshakelessCloseMessage(wse.Message);
+
+        private static bool IsHandshakelessCloseMessage(string message) =>
+            message != null && message.IndexOf("without completing the close handshake", StringComparison.OrdinalIgnoreCase) >= 0;
 
         private async Task AttemptReconnectAsync(CancellationToken token)
         {
