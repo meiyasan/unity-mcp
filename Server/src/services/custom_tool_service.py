@@ -233,22 +233,31 @@ class CustomToolService:
                     # No retry hint: the operation may still be running, and resubmitting it could run it twice.
                 )
 
-            await asyncio.sleep(poll_interval)
+            await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.time())))
 
             # A poll inherits the tool's parameters, including its long command budget (300 s by default):
             # left as is, one status poll could wait far past this polling deadline. Give each poll what is
-            # left of the budget instead (the hub still waits at least its 30 s default).
+            # left of the budget instead. The hub still waits at least its 30 s default for any command,
+            # so the wait itself is also cut off at the deadline here.
+            remaining = max(0.0, deadline - time.time())
             poll_params.pop("timeoutSeconds", None)
-            poll_params["timeout_seconds"] = max(1.0, deadline - time.time())
+            poll_params["timeout_seconds"] = max(1.0, remaining)
 
             try:
-                response = await send_with_unity_instance(
-                    async_send_command_with_retry,
-                    unity_instance,
-                    tool_name,
-                    poll_params,
-                    user_id=user_id,
+                response = await asyncio.wait_for(
+                    send_with_unity_instance(
+                        async_send_command_with_retry,
+                        unity_instance,
+                        tool_name,
+                        poll_params,
+                        user_id=user_id,
+                    ),
+                    timeout=remaining,
                 )
+            except asyncio.TimeoutError:
+                # The deadline passed mid-poll: keep the last pending response and let the
+                # check above report the timeout.
+                continue
             except Exception as exc:  # pragma: no cover - network/domain reload variability
                 logger.debug(f"Polling {tool_name} failed, will retry: {exc}")
                 # Back off modestly but stay responsive.
