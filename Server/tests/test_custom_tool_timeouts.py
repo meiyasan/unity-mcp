@@ -143,3 +143,26 @@ async def test_each_poll_waits_no_longer_than_the_remaining_budget(monkeypatch):
     assert seen and 0 < seen[0]["timeout_seconds"] <= 5
     assert "timeoutSeconds" not in seen[0]
     assert seen[0]["action"] == "status"
+
+
+@pytest.mark.asyncio
+async def test_a_hung_poll_is_cut_off_at_the_polling_deadline(monkeypatch):
+    """The hub waits at least 30 s for any command; a poll must still end at the polling deadline."""
+    service = _make_service()
+
+    async def hang(_send_fn, _instance, _command, _params, **kwargs):  # noqa: ARG001
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(
+        "services.custom_tool_service.send_with_unity_instance", hang)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await service._poll_until_complete(
+        "long_running_tool", "Playground@abc", {},
+        {"_mcp_status": "pending", "_mcp_poll_interval": 0.01}, "status", max_poll_seconds=1)
+    elapsed = loop.time() - started
+
+    assert result.success is False
+    assert "Timeout waiting for long_running_tool" in result.message
+    assert elapsed < 2.0
