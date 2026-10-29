@@ -189,7 +189,7 @@ async def test_a_stdio_poll_stops_its_worker_thread_at_the_polling_deadline(monk
             return {"_mcp_status": "pending", "_mcp_poll_interval": 0.01}
 
     monkeypatch.setattr(config, "transport_mode", "stdio")
-    monkeypatch.setattr(unity_connection, "get_unity_connection", lambda instance_id=None: _BlockingConnection())
+    monkeypatch.setattr(unity_connection, "get_unity_connection", lambda instance_id=None, deadline=None: _BlockingConnection())
 
     service = _make_service()
     started = time.monotonic()
@@ -216,7 +216,7 @@ def test_budget_only_shortens_the_configured_command_deadline(monkeypatch):
             deadlines.append(deadline - time.monotonic())
             return {"success": True}
 
-    monkeypatch.setattr(unity_connection, "get_unity_connection", lambda instance_id=None: _Connection())
+    monkeypatch.setattr(unity_connection, "get_unity_connection", lambda instance_id=None, deadline=None: _Connection())
     monkeypatch.setattr(config, "command_total_timeout", 90.0)
 
     unity_connection.send_command_with_retry("x", {}, budget_s=2.0)
@@ -226,3 +226,56 @@ def test_budget_only_shortens_the_configured_command_deadline(monkeypatch):
     assert deadlines[0] <= 2.0
     assert 85.0 < deadlines[1] <= 90.0
     assert 85.0 < deadlines[2] <= 90.0
+
+
+def test_finding_the_instance_spends_the_budget(monkeypatch):
+    """The budget starts before the connection lookup: a slow lookup leaves less for the command, and a
+    lookup that spends all of it means the command is not sent at all."""
+    import time
+
+    import transport.legacy.unity_connection as unity_connection
+
+    sent: list[float] = []
+    lookup_deadlines: list[float | None] = []
+
+    class _Connection:
+        def send_command(self, command_type, params, max_attempts=None, deadline=None):  # noqa: ARG002
+            sent.append(deadline - time.monotonic())
+            return {"success": True}
+
+    def slow_lookup(instance_id=None, deadline=None):  # noqa: ARG001
+        lookup_deadlines.append(deadline)
+        time.sleep(0.3)
+        return _Connection()
+
+    monkeypatch.setattr(unity_connection, "get_unity_connection", slow_lookup)
+    monkeypatch.setattr(config, "command_total_timeout", 90.0)
+
+    started = time.monotonic()
+    unity_connection.send_command_with_retry("x", {}, budget_s=1.0)
+    assert lookup_deadlines[0] is not None and lookup_deadlines[0] <= started + 1.05
+    assert sent and sent[0] <= 0.75
+
+    result = unity_connection.send_command_with_retry("x", {}, budget_s=0.2)
+    assert len(sent) == 1, "a command whose budget the lookup spent must not be sent"
+    assert result.success is False
+
+
+def test_connect_caps_its_timeouts_to_the_deadline(monkeypatch):
+    import socket
+    import time
+
+    import transport.legacy.unity_connection as unity_connection
+
+    timeouts: list[float] = []
+
+    def refuse(address, timeout=None):  # noqa: ARG001
+        timeouts.append(timeout)
+        raise ConnectionRefusedError("no editor here")
+
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(config, "connection_timeout", 30.0)
+
+    conn = unity_connection.UnityConnection(port=1, instance_id="Playground@abc")
+    assert conn.connect(deadline=time.monotonic() + 0.5) is False
+    assert timeouts and timeouts[0] <= 0.5

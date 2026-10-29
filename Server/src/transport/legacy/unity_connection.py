@@ -50,8 +50,11 @@ class UnityConnection:
         except OSError as exc:
             logger.debug(f"Unable to set TCP_NODELAY: {exc}")
 
-    def connect(self, connect_timeout: float | None = None) -> bool:
-        """Establish a connection to the Unity Editor."""
+    def connect(self, connect_timeout: float | None = None, deadline: float | None = None) -> bool:
+        """Establish a connection to the Unity Editor.
+
+        ``deadline`` (a monotonic() ceiling) caps both the connect and the handshake timeouts.
+        """
         if self.sock:
             return True
         with self._conn_lock:
@@ -62,6 +65,7 @@ class UnityConnection:
                 if connect_timeout is None:
                     connect_timeout = float(
                         getattr(config, "connection_timeout", 1.0))
+                connect_timeout = self._cap_to_deadline(connect_timeout, deadline)
                 # We trust config.unity_host (default 127.0.0.1) but future improvements
                 # could dynamically prefer 'localhost' depending on OS resolver behavior.
                 self.sock = socket.create_connection(
@@ -73,8 +77,8 @@ class UnityConnection:
                 # Strict handshake: require FRAMING=1
                 try:
                     require_framing = getattr(config, "require_framing", True)
-                    handshake_timeout = float(
-                        getattr(config, "handshake_timeout", 1.0))
+                    handshake_timeout = self._cap_to_deadline(float(
+                        getattr(config, "handshake_timeout", 1.0)), deadline)
                     self.sock.settimeout(handshake_timeout)
                     buf = bytearray()
                     deadline = time.monotonic() + handshake_timeout
@@ -670,13 +674,14 @@ class UnityConnectionPool:
             f"Check mcpforunity://instances resource for all instances."
         )
 
-    def get_connection(self, instance_identifier: str | None = None) -> UnityConnection:
+    def get_connection(self, instance_identifier: str | None = None, deadline: float | None = None) -> UnityConnection:
         """
         Get or create a connection to a Unity instance.
 
         Args:
             instance_identifier: Optional identifier (name, hash, name@hash, etc.)
                                 If None, uses default or most recent instance
+            deadline: Optional monotonic() ceiling for establishing a new connection
 
         Returns:
             UnityConnection to the specified instance
@@ -696,7 +701,7 @@ class UnityConnectionPool:
                 logger.info(
                     f"Creating new connection to Unity instance: {target.id} (port {target.port})")
                 conn = UnityConnection(port=target.port, instance_id=target.id)
-                if not conn.connect():
+                if not conn.connect(deadline=deadline):
                     raise ConnectionError(
                         f"Failed to connect to Unity instance '{target.id}' on port {target.port}. "
                         f"Ensure the Unity Editor is running."
@@ -749,7 +754,7 @@ def get_unity_connection_pool() -> UnityConnectionPool:
 
 
 # Backwards compatibility: keep old single-connection function
-def get_unity_connection(instance_identifier: str | None = None) -> UnityConnection:
+def get_unity_connection(instance_identifier: str | None = None, deadline: float | None = None) -> UnityConnection:
     """Retrieve or establish a Unity connection.
 
     Args:
@@ -762,7 +767,7 @@ def get_unity_connection(instance_identifier: str | None = None) -> UnityConnect
     Note: This function now uses the connection pool internally.
     """
     pool = get_unity_connection_pool()
-    return pool.get_connection(instance_identifier)
+    return pool.get_connection(instance_identifier, deadline=deadline)
 
 
 # -----------------------------
@@ -842,9 +847,23 @@ def send_command_with_retry(
     """
     t_retry_start = time.time()
     logger.info("[TIMING-STDIO] send_command_with_retry START command=%s", command_type)
+    # The budget starts now, so finding and connecting to the instance spends it too.
+    total_timeout = max(0.0, float(getattr(config, "command_total_timeout", 90.0)))
+    deadline = time.monotonic() + total_timeout if total_timeout > 0 else None
+    if budget_s is not None:
+        capped = time.monotonic() + max(0.0, budget_s)
+        deadline = capped if deadline is None else min(deadline, capped)
     t_get_conn = time.time()
-    conn = get_unity_connection(instance_id)
+    conn = get_unity_connection(instance_id, deadline=deadline)
     logger.info("[TIMING-STDIO] get_unity_connection took %.3fs command=%s", time.time() - t_get_conn, command_type)
+    if deadline is not None and time.monotonic() >= deadline:
+        # The caller has given up by now (a status poll past its deadline): do not send a command it no
+        # longer waits for.
+        return MCPResponse(
+            success=False,
+            error=f"No time left to send '{command_type}' after connecting to Unity",
+            hint="retry",
+        )
     if max_retries is None:
         max_retries = getattr(config, "reload_max_retries", 40)
     if retry_ms is None:
@@ -870,12 +889,6 @@ def send_command_with_retry(
         max_wait_s = 20.0
     # Clamp to [0, 20] to prevent misconfiguration from causing excessive waits
     max_wait_s = max(0.0, min(max_wait_s, 20.0))
-
-    total_timeout = max(0.0, float(getattr(config, "command_total_timeout", 90.0)))
-    deadline = time.monotonic() + total_timeout if total_timeout > 0 else None
-    if budget_s is not None:
-        capped = time.monotonic() + max(0.0, budget_s)
-        deadline = capped if deadline is None else min(deadline, capped)
 
     # If retry_on_reload=False, disable connection-level retries too (issue #577)
     # Commands that trigger compilation/reload shouldn't retry on disconnect
