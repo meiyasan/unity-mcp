@@ -591,3 +591,65 @@ async def test_register_tools_notifies_clients_only_when_the_served_tools_change
     assert notified == [True], "an identical re-registration changes nothing and is not announced"
     await route(_JsonRequest({**body, "tools": [_definition(["path"]).model_dump()]}))
     assert notified == [True, True], "a changed schema is announced"
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_client_does_not_hold_up_the_tool_list_notification(monkeypatch):
+    import asyncio
+    import time
+
+    import transport.plugin_hub as plugin_hub
+    from transport.plugin_hub import PluginHub
+
+    class _Session:
+        def __init__(self, stall: bool):
+            self.stall = stall
+            self.notified = False
+
+        async def send_tool_list_changed(self):
+            if self.stall:
+                await asyncio.sleep(3600)
+            self.notified = True
+
+    stalled, healthy = _Session(stall=True), _Session(stall=False)
+    sessions = plugin_hub.weakref.WeakSet([stalled, healthy])
+    monkeypatch.setattr(plugin_hub, "_active_mcp_sessions", sessions)
+    monkeypatch.setattr(plugin_hub, "_TOOL_LIST_NOTIFY_TIMEOUT_S", 0.1, raising=False)
+
+    started = time.monotonic()
+    await asyncio.wait_for(PluginHub._notify_mcp_tool_list_changed(), timeout=2.0)
+
+    assert healthy.notified
+    assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.asyncio
+async def test_clients_hear_of_the_tools_registered_before_one_failed(monkeypatch):
+    from transport.plugin_hub import PluginHub
+
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    route = mcp.routes["/register-tools"]
+    notified: list[bool] = []
+
+    async def record():
+        notified.append(True)
+
+    monkeypatch.setattr(PluginHub, "_notify_mcp_tool_list_changed", record)
+    build_signature = service._build_signature
+
+    def failing_signature(definition):
+        if definition.name == "broken_tool":
+            raise RuntimeError("cannot build signature")
+        return build_signature(definition)
+
+    monkeypatch.setattr(service, "_build_signature", failing_signature)
+    broken = ToolDefinitionModel(name="broken_tool", description="broken")
+    body = {"project_id": "proj", "project_hash": "aaaa1111",
+            "tools": [_definition(["name"]).model_dump(), broken.model_dump()]}
+
+    with pytest.raises(RuntimeError):
+        await route(_JsonRequest(body))
+
+    assert "my_tool" in service._global_tools
+    assert notified == [True], "the tool served before the failure is announced"
