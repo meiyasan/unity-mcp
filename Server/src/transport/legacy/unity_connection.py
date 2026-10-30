@@ -85,10 +85,13 @@ class UnityConnection:
                         getattr(config, "handshake_timeout", 1.0)), deadline)
                     self.sock.settimeout(handshake_timeout)
                     buf = bytearray()
-                    deadline = time.monotonic() + handshake_timeout
-                    while time.monotonic() < deadline and len(buf) < 512:
+                    # The earlier of the configured handshake timeout and the caller's deadline.
+                    handshake_deadline = time.monotonic() + handshake_timeout
+                    if deadline is not None:
+                        handshake_deadline = min(deadline, handshake_deadline)
+                    while time.monotonic() < handshake_deadline and len(buf) < 512:
                         try:
-                            chunk = self.sock.recv(256)
+                            chunk = self._recv_by(self.sock, 256, handshake_deadline, handshake_timeout)
                             if not chunk:
                                 break
                             buf.extend(chunk)
@@ -394,31 +397,33 @@ class UnityConnection:
                 raise TimeoutError(
                     f"Command '{command_type}' exceeded total deadline of "
                     f"{total_timeout:.1f}s (connection wedged or Unity unresponsive)")
+            # Commands on this connection are serialized, from the liveness check to the close after a
+            # failure, so no command changes the socket (or its timeout) while another is using it. Wait for
+            # another command's turn only as long as this one's budget lasts.
+            if not self._io_lock.acquire(timeout=self._lock_wait(deadline)):
+                raise _DeadlineBeforeSend(
+                    f"Command '{command_type}' ran out of time waiting for the connection to Unity")
+            failure: Exception | None = None
             try:
-                # Discard stale sockets left over from a previous domain reload
-                # so we reconnect instead of writing to a dead connection.
-                self._ensure_live_connection()
-                # Ensure connected (handshake occurs within connect())
-                t_conn_start = time.time()
-                if not self.sock and not self.connect(self._cap_to_deadline(config.connection_timeout, deadline), deadline=deadline):
-                    raise ConnectionError("Could not connect to Unity")
-                logger.info("[TIMING-STDIO] connect took %.3fs command=%s", time.time() - t_conn_start, command_type)
-
-                # Build payload
-                if command_type == 'ping':
-                    payload = b'ping'
-                else:
-                    payload = json.dumps({
-                        'type': command_type,
-                        'params': params,
-                    }).encode('utf-8')
-
-                # Send/receive are serialized to protect the shared socket. Wait for another command's
-                # turn only as long as this one's budget lasts, and do not send once it has run out.
-                if not self._io_lock.acquire(timeout=self._lock_wait(deadline)):
-                    raise _DeadlineBeforeSend(
-                        f"Command '{command_type}' ran out of time waiting for the connection to Unity")
                 try:
+                    # Discard stale sockets left over from a previous domain reload
+                    # so we reconnect instead of writing to a dead connection.
+                    self._ensure_live_connection()
+                    # Ensure connected (handshake occurs within connect())
+                    t_conn_start = time.time()
+                    if not self.sock and not self.connect(self._cap_to_deadline(config.connection_timeout, deadline), deadline=deadline):
+                        raise ConnectionError("Could not connect to Unity")
+                    logger.info("[TIMING-STDIO] connect took %.3fs command=%s", time.time() - t_conn_start, command_type)
+
+                    # Build payload
+                    if command_type == 'ping':
+                        payload = b'ping'
+                    else:
+                        payload = json.dumps({
+                            'type': command_type,
+                            'params': params,
+                        }).encode('utf-8')
+
                     if deadline is not None and time.monotonic() >= deadline:
                         raise _DeadlineBeforeSend(
                             f"Command '{command_type}' ran out of time before it was sent")
@@ -455,98 +460,100 @@ class UnityConnection:
                     finally:
                         if self.sock:
                             self.sock.settimeout(original_timeout)
-                finally:
-                    self._io_lock.release()
 
-                # Parse
-                if command_type == 'ping':
+                    # Parse
+                    if command_type == 'ping':
+                        resp = json.loads(response_data.decode('utf-8'))
+                        if resp.get('status') == 'success' and resp.get('result', {}).get('message') == 'pong':
+                            return {"message": "pong"}
+                        raise Exception("Ping unsuccessful")
+
                     resp = json.loads(response_data.decode('utf-8'))
-                    if resp.get('status') == 'success' and resp.get('result', {}).get('message') == 'pong':
-                        return {"message": "pong"}
-                    raise Exception("Ping unsuccessful")
+                    if resp.get('status') == 'error':
+                        err = resp.get('error') or resp.get(
+                            'message', 'Unknown Unity error')
+                        raise Exception(err)
+                    return resp.get('result', {})
+                except _DeadlineBeforeSend:
+                    # Nothing was sent, and the socket is left as it was.
+                    raise
+                except Exception as e:
+                    failure = e
+                    logger.warning(
+                        f"Unity communication attempt {attempt+1} failed: {e}")
+                    try:
+                        if self.sock:
+                            self.sock.close()
+                    finally:
+                        self.sock = None
+            finally:
+                self._io_lock.release()
 
-                resp = json.loads(response_data.decode('utf-8'))
-                if resp.get('status') == 'error':
-                    err = resp.get('error') or resp.get(
-                        'message', 'Unknown Unity error')
-                    raise Exception(err)
-                return resp.get('result', {})
-            except _DeadlineBeforeSend:
-                # Nothing was sent, and the socket may be serving another command: leave it alone.
-                raise
-            except Exception as e:
-                logger.warning(
-                    f"Unity communication attempt {attempt+1} failed: {e}")
-                try:
-                    if self.sock:
-                        self.sock.close()
-                finally:
-                    self.sock = None
-
-                # Re-discover the port for this specific instance
-                try:
-                    stdio_port_registry.get_instances(force_refresh=True)
-                    new_port: int | None = None
-                    if self.instance_id:
-                        # Try to rediscover the specific instance via shared registry
-                        refreshed_instance = stdio_port_registry.get_instance(
-                            self.instance_id)
-                        if refreshed_instance and isinstance(refreshed_instance.port, int):
-                            new_port = refreshed_instance.port
-                            logger.debug(
-                                f"Rediscovered instance {self.instance_id} on port {new_port}")
-                        else:
-                            logger.warning(
-                                f"Instance {self.instance_id} not found during reconnection; falling back to port scan",
-                            )
-
-                    # Fallback to registry default if instance-specific discovery failed
-                    if new_port is None:
-                        new_port = stdio_port_registry.get_port(
-                            self.instance_id)
-                        logger.info(
-                            f"Using Unity port from stdio_port_registry: {new_port}")
-
-                    if new_port != self.port:
-                        logger.info(
-                            f"Unity port changed {self.port} -> {new_port}")
-                    self.port = new_port
-                except Exception as de:
-                    logger.debug(f"Port discovery failed: {de}")
-
-                if attempt < attempts:
-                    # Heartbeat-aware, jittered backoff
-                    status = read_status_file(target_hash)
-                    # Base exponential backoff
-                    backoff = base_backoff * (2 ** attempt)
-                    # Decorrelated jitter multiplier
-                    jitter = random.uniform(0.1, 0.3)
-
-                    # Fast‑retry for transient socket failures
-                    fast_error = isinstance(
-                        e, (ConnectionRefusedError, ConnectionResetError, TimeoutError))
-                    if not fast_error:
-                        try:
-                            err_no = getattr(e, 'errno', None)
-                            fast_error = err_no in (
-                                errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT)
-                        except Exception:
-                            pass
-
-                    # Cap backoff depending on state
-                    if status and status.get('reloading'):
-                        # Domain reload can take 10-20s; use longer waits
-                        cap = 5.0
-                    elif fast_error:
-                        cap = 0.25
+            e = failure
+            # Re-discover the port for this specific instance
+            try:
+                stdio_port_registry.get_instances(force_refresh=True)
+                new_port: int | None = None
+                if self.instance_id:
+                    # Try to rediscover the specific instance via shared registry
+                    refreshed_instance = stdio_port_registry.get_instance(
+                        self.instance_id)
+                    if refreshed_instance and isinstance(refreshed_instance.port, int):
+                        new_port = refreshed_instance.port
+                        logger.debug(
+                            f"Rediscovered instance {self.instance_id} on port {new_port}")
                     else:
-                        cap = 3.0
+                        logger.warning(
+                            f"Instance {self.instance_id} not found during reconnection; falling back to port scan",
+                        )
 
-                    sleep_s = min(cap, jitter * (2 ** attempt))
-                    sleep_s = self._cap_to_deadline(sleep_s, deadline, floor=0.0)
-                    time.sleep(sleep_s)
-                    continue
-                raise
+                # Fallback to registry default if instance-specific discovery failed
+                if new_port is None:
+                    new_port = stdio_port_registry.get_port(
+                        self.instance_id)
+                    logger.info(
+                        f"Using Unity port from stdio_port_registry: {new_port}")
+
+                if new_port != self.port:
+                    logger.info(
+                        f"Unity port changed {self.port} -> {new_port}")
+                self.port = new_port
+            except Exception as de:
+                logger.debug(f"Port discovery failed: {de}")
+
+            if attempt < attempts:
+                # Heartbeat-aware, jittered backoff
+                status = read_status_file(target_hash)
+                # Base exponential backoff
+                backoff = base_backoff * (2 ** attempt)
+                # Decorrelated jitter multiplier
+                jitter = random.uniform(0.1, 0.3)
+
+                # Fast‑retry for transient socket failures
+                fast_error = isinstance(
+                    e, (ConnectionRefusedError, ConnectionResetError, TimeoutError))
+                if not fast_error:
+                    try:
+                        err_no = getattr(e, 'errno', None)
+                        fast_error = err_no in (
+                            errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT)
+                    except Exception:
+                        pass
+
+                # Cap backoff depending on state
+                if status and status.get('reloading'):
+                    # Domain reload can take 10-20s; use longer waits
+                    cap = 5.0
+                elif fast_error:
+                    cap = 0.25
+                else:
+                    cap = 3.0
+
+                sleep_s = min(cap, jitter * (2 ** attempt))
+                sleep_s = self._cap_to_deadline(sleep_s, deadline, floor=0.0)
+                time.sleep(sleep_s)
+                continue
+            raise e
 
 
 # -----------------------------
