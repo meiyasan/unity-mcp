@@ -310,13 +310,18 @@ class CustomToolService:
         if isinstance(response, MCPResponse):
             return response
         if isinstance(response, dict):
+            data = response.get(
+                "data", response) if "data" not in response else response["data"]
+            hint = response.get("hint")
+            if isinstance(data, dict) and data.get("reason") == "unity_timeout":
+                # The tool may have run: its effects are to be checked, not the tool resubmitted.
+                hint = None
             return MCPResponse(
                 success=response.get("success", True),
                 message=response.get("message"),
                 error=response.get("error"),
-                data=response.get(
-                    "data", response) if "data" not in response else response["data"],
-                hint=response.get("hint"),
+                data=data,
+                hint=hint,
             )
 
         success = True

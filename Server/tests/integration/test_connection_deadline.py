@@ -143,7 +143,7 @@ def test_connection_failure_refreshes_cached_port_before_backoff(monkeypatch) ->
     attempted_ports: list[int] = []
     ports_before_backoff: list[int] = []
 
-    def fail_connect(connect_timeout: float | None = None) -> bool:
+    def fail_connect(connect_timeout: float | None = None, deadline: float | None = None) -> bool:
         attempted_ports.append(conn.port)
         return False
 
