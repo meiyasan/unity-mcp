@@ -95,6 +95,17 @@ class CustomToolService:
             except ValidationError as exc:
                 return JSONResponse({"success": False, "error": exc.errors()}, status_code=400)
 
+            if not payload.project_hash and self._project_owns_global_tools(payload.project_id):
+                # Without its hash the request cannot say which of the project's instances it speaks for,
+                # so it could neither release that instance's dropped tools nor leave the others' alone.
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": "project_hash is required: this project's instances own global custom tools",
+                    },
+                    status_code=409,
+                )
+
             registered, replaced = self._register_project_tools(
                 payload.project_id, payload.tools, project_hash=payload.project_hash)
 
@@ -438,6 +449,13 @@ class CustomToolService:
         user, sep, project_hash = owner_key.rpartition("/")
         return f"{user}{sep}{project_hash.lower()}"
 
+    def _project_owns_global_tools(self, project_id: str) -> bool:
+        """Whether an instance (hash) of ``project_id`` owns a global tool. Project-scoped mode tracks no owners."""
+        if self._project_scoped_tools:
+            return False
+        hashes = {h for h, pid in self._hash_to_project.items() if pid == project_id}
+        return any(owners & hashes for owners in self._global_tool_owners.values())
+
     def _release_undeclared_tools(self, owner: str, tools: list[ToolDefinitionModel]) -> None:
         """A project's tool list is complete: it no longer owns the tools it has stopped declaring.
 
@@ -483,6 +501,11 @@ class CustomToolService:
             if live_owners is not None:
                 others &= {self._owner_id(key) for key in live_owners}
             if others:
+                # This project no longer declares the schema being served, so it no longer holds it: when the
+                # other owners update to the same new schema in turn, they replace it instead of each keeping
+                # the old one on the other's behalf.
+                if owner:
+                    previous_owners.discard(owner)
                 logger.warning(
                     "Custom tool '%s' from project %s declares a different schema than connected project(s) %s; "
                     "keeping theirs (one schema per tool name is served). Call this project's version through "
