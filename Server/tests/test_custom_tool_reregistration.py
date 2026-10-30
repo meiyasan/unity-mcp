@@ -327,3 +327,51 @@ def test_a_disconnected_projects_schema_gives_way():
     assert mcp.removed == ["my_tool"]
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
     assert service._global_tool_owners["my_tool"] == {"bbbb2222"}
+
+
+def test_user_ids_differing_only_in_case_are_different_owners():
+    """User ids are opaque and case-sensitive: user-A's project must not pass for user-a's. The project hash
+    itself ignores case."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    live = {"user-a/aaaa1111", "user-A/aaaa1111"}
+
+    service._register_global_tool(_definition(["name"]), owner="user-a/aaaa1111", live_owners=live)
+    service._register_global_tool(_definition(["path"]), owner="user-A/aaaa1111", live_owners=live)
+    assert mcp.removed == []
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+
+    service._register_global_tool(_definition(["path"]), owner="user-a/AAAA1111", live_owners={"user-a/aaaa1111"})
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+
+
+def test_a_tool_a_project_stops_declaring_is_no_longer_its_own():
+    """A project's tool list is complete: dropping a tool releases it, so another connected project's changed
+    schema is not refused on behalf of a project that no longer declares it."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+    live = {"aaaa1111", "bbbb2222"}
+
+    service.register_global_tools([_definition(["name"])], owner="aaaa1111", live_owners=live)
+    service.register_global_tools([], owner="aaaa1111", live_owners=live)  # reloads without the tool
+    service.register_global_tools([_definition(["path"])], owner="bbbb2222", live_owners=live)
+
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+    assert service._global_tool_owners["my_tool"] == {"bbbb2222"}
+
+
+def test_a_skipped_tool_is_logged_with_its_traceback(caplog):
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("bad schema")
+
+    service._register_global_tool = broken
+    with caplog.at_level("WARNING"):
+        service.register_global_tools([_definition(["name"])])
+
+    skipped = [r for r in caplog.records if "could not be registered" in r.getMessage()]
+    assert skipped and skipped[0].exc_info is not None
