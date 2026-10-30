@@ -431,3 +431,49 @@ def test_the_reload_preflight_waits_for_the_connection_only_while_the_budget_las
     assert elapsed < 1.0
     assert outcome["result"].hint == "retry"
     assert conn.sock is not None, "the socket of the command holding the lock is left alone"
+
+
+def test_a_waiting_command_leaves_the_socket_alone_until_its_turn(monkeypatch, tmp_path):
+    """The liveness check reads and resets the socket's timeout: done while another command holds the
+    connection, it could put back a longer timeout under that command's send."""
+    import time
+
+    conn, _unity = _stdio_connection(monkeypatch, tmp_path)
+    checked: list[bool] = []
+    monkeypatch.setattr(conn, "_ensure_live_connection", lambda: checked.append(True))
+    conn._io_lock.acquire()  # another command is using the connection
+    try:
+        _call_in_thread(
+            lambda: conn.send_command("x", {}, max_attempts=0, deadline=time.monotonic() + 0.3), 3.0)
+    finally:
+        conn._io_lock.release()
+    assert checked == [], "the liveness check ran while another command held the connection"
+
+
+def test_the_handshake_ends_at_the_earlier_of_its_timeout_and_the_deadline(monkeypatch):
+    import socket
+    import threading
+    import time
+
+    import transport.legacy.unity_connection as unity_connection
+
+    ours, unity = socket.socketpair()
+    stop = threading.Event()
+
+    def trickle():  # a byte every 0.45 s, never the end of the handshake line
+        while not stop.is_set():
+            try:
+                unity.sendall(b"F")
+            except OSError:
+                return
+            time.sleep(0.45)
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: ours)
+    monkeypatch.setattr(config, "handshake_timeout", 5.0)
+    threading.Thread(target=trickle, daemon=True).start()
+    conn = unity_connection.UnityConnection(port=1, instance_id="Playground@abc")
+    try:
+        elapsed, _ = _call_in_thread(lambda: conn.connect(deadline=time.monotonic() + 0.5), 5.0)
+    finally:
+        stop.set()
+    assert elapsed < 0.75
