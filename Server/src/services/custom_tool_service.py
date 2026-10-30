@@ -72,6 +72,9 @@ class CustomToolService:
         # What each project (owner key) last declared for each global tool. A tool's owners are the projects
         # whose declaration is the definition being served.
         self._global_tool_declarations: dict[str, dict[str, dict]] = {}
+        # Projects registered over /register-tools. That route has no connection whose end could be observed,
+        # so they count as connected beside the PluginHub sessions.
+        self._route_owners: set[str] = set()
         self._register_http_routes()
 
     @classmethod
@@ -108,7 +111,11 @@ class CustomToolService:
                 )
 
             registered, replaced = self._register_project_tools(
-                payload.project_id, payload.tools, project_hash=payload.project_hash)
+                payload.project_id,
+                payload.tools,
+                project_hash=payload.project_hash,
+                live_owners=await self._hub_owner_keys(),
+            )
 
             message = f"Registered {len(registered)} tool(s)"
             if replaced:
@@ -331,18 +338,24 @@ class CustomToolService:
         project_id: str,
         tools: list[ToolDefinitionModel],
         project_hash: str | None = None,
+        live_owners: set[str] | None = None,
     ) -> tuple[list[str], list[str]]:
+        """Register a project's tools from /register-tools. ``live_owners`` are the PluginHub sessions' owner keys
+        (None without a hub): declarations of hub projects no longer connected then give way here too."""
         registered: list[str] = []
         replaced: list[str] = []
+        live: set[str] | None = None
         if not self._project_scoped_tools and project_hash:
-            self._release_undeclared_tools(project_hash, tools)
+            self._route_owners.add(self._owner_id(project_hash))
+            live = self._with_route_owners(live_owners)
+            self._release_undeclared_tools(project_hash, tools, live)
         for tool in tools:
             if self._is_registered(project_id, tool.name):
                 replaced.append(tool.name)
             self._register_tool(project_id, tool)
             registered.append(tool.name)
             if not self._project_scoped_tools:
-                self._register_global_tool(tool, owner=project_hash)
+                self._register_global_tool(tool, owner=project_hash, live_owners=live)
 
         if project_hash:
             self._hash_to_project[project_hash.lower()] = project_id
@@ -363,6 +376,7 @@ class CustomToolService:
         # Global custom tools are always registered, even when project-scoped tools
         # are enabled. Project-scoped tools can override globals by name, but
         # disabling globals entirely would break shared tooling that projects expect.
+        live_owners = self._with_route_owners(live_owners)
         if owner:
             self._release_undeclared_tools(owner, tools, live_owners)
         builtin_names = self._get_builtin_tool_names()
@@ -410,6 +424,18 @@ class CustomToolService:
         """Normalize an owner key: the project hash ignores case, a user id (``user/hash``) keeps it."""
         user, sep, project_hash = owner_key.rpartition("/")
         return f"{user}{sep}{project_hash.lower()}"
+
+    async def _hub_owner_keys(self) -> set[str] | None:
+        """The owner keys of every connected PluginHub session; None when no hub is running."""
+        if not PluginHub.is_configured():
+            return None
+        return await PluginHub._registry.owner_keys()
+
+    def _with_route_owners(self, live_owners: set[str] | None) -> set[str] | None:
+        """Connected owners: the given hub sessions plus the projects registered over /register-tools."""
+        if live_owners is None:
+            return None
+        return {self._owner_id(key) for key in live_owners} | self._route_owners
 
     def _served_owners(self, name: str) -> set[str]:
         """The projects whose declaration of ``name`` is the definition being served."""
