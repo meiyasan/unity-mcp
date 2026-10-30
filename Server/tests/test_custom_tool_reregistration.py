@@ -375,3 +375,80 @@ def test_a_skipped_tool_is_logged_with_its_traceback(caplog):
 
     skipped = [r for r in caplog.records if "could not be registered" in r.getMessage()]
     assert skipped and skipped[0].exc_info is not None
+
+
+def test_projects_sharing_a_tool_can_both_move_to_a_new_schema():
+    """Two connected projects serve the same definition and both update it. The first update is refused while
+    the other still serves the old schema, but the first project no longer holds it: the second update replaces
+    it, instead of each project keeping the old schema on the other's behalf."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    live = {"aaaa1111", "bbbb2222"}
+
+    service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners=live)
+    service._register_global_tool(_definition(["name"]), owner="bbbb2222", live_owners=live)
+    service._register_global_tool(_definition(["path"]), owner="aaaa1111", live_owners=live)
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+    service._register_global_tool(_definition(["path"]), owner="bbbb2222", live_owners=live)
+
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+    service._register_global_tool(_definition(["path"]), owner="aaaa1111", live_owners=live)
+    assert service._global_tool_owners["my_tool"] == {"aaaa1111", "bbbb2222"}
+
+
+class _RouteMcp(_RecordingMcp):
+    def __init__(self):
+        super().__init__()
+        self.routes: dict = {}
+
+    def custom_route(self, path, methods=None):  # noqa: ARG002
+        def _decorator(fn):
+            self.routes[path] = fn
+            return fn
+
+        return _decorator
+
+
+class _JsonRequest:
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
+@pytest.mark.asyncio
+async def test_a_hashless_registration_is_refused_while_the_project_owns_global_tools():
+    """Without its hash a registration cannot say which instance of the project it speaks for, so it can neither
+    release that instance's dropped tools nor leave the others' alone: it is refused until it sends the hash."""
+    import json
+
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    route = mcp.routes["/register-tools"]
+    tool = _definition(["name"]).model_dump()
+
+    first = await route(_JsonRequest({"project_id": "proj", "tools": [tool]}))
+    assert first.status_code == 200, "a project owning nothing still registers without a hash"
+
+    await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": [tool]}))
+    refused = await route(_JsonRequest({"project_id": "proj", "tools": []}))
+    assert refused.status_code == 409
+    assert json.loads(refused.body)["success"] is False
+    assert service._global_tool_owners["my_tool"] == {"aaaa1111"}, "a refused request registers nothing"
+
+    released = await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": []}))
+    assert released.status_code == 200
+    assert service._global_tool_owners["my_tool"] == set()
+
+
+@pytest.mark.asyncio
+async def test_project_scoped_mode_keeps_accepting_hashless_registrations():
+    mcp = _RouteMcp()
+    CustomToolService(mcp, project_scoped_tools=True)
+    route = mcp.routes["/register-tools"]
+    tool = _definition(["name"]).model_dump()
+
+    await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": [tool]}))
+    response = await route(_JsonRequest({"project_id": "proj", "tools": [tool]}))
+    assert response.status_code == 200
