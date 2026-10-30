@@ -120,7 +120,7 @@ class CustomToolService:
                     payload.project_id,
                     payload.tools,
                     project_hash=payload.project_hash,
-                    live_owners=await self._hub_owner_keys(),
+                    live_owners=await self.hub_owner_keys(),
                 )
             finally:
                 # As after a PluginHub registration: connected clients re-fetch the tool list, but only when the
@@ -453,7 +453,7 @@ class CustomToolService:
     def _served_global_definitions(self) -> dict[str, dict]:
         return {name: definition.model_dump() for name, definition in self._global_tools.items()}
 
-    async def _hub_owner_keys(self) -> set[str] | None:
+    async def hub_owner_keys(self) -> set[str] | None:
         """The owner keys of every connected PluginHub session; None when no hub is running."""
         if not PluginHub.is_configured():
             return None
@@ -536,14 +536,11 @@ class CustomToolService:
         removed, or restored because FastMCP refused this one. False when FastMCP serves neither.
         """
         owner = self._owner_id(owner) if owner else None
-        if owner:
-            # Recorded whatever is served: a project whose schema is kept out for now owns the tool as soon as
-            # its schema is the one served, whoever registers it.
-            self._global_tool_declarations.setdefault(definition.name, {})[owner] = definition.model_dump()
         existing = self._global_tools.get(definition.name)
         replaced = None
         if existing:
             if existing.model_dump() == definition.model_dump():
+                self._declare(owner, definition)
                 return True
             # FastMCP serves one schema per tool name, and validates a call against it before the handler
             # routes it to a project. Replacing the definition another connected project declares would make
@@ -562,6 +559,9 @@ class CustomToolService:
                     owner or "(unknown)",
                     ", ".join(sorted(others)),
                 )
+                # Recorded although another schema is served: this project owns the tool as soon as its schema is
+                # the one served, whoever registers it.
+                self._declare(owner, definition)
                 return True
             # Unity re-registers on every domain reload, so the newest definition is authoritative. Keeping the
             # first one froze a tool's signature at its earliest version: after fixing a tool's parameters the
@@ -618,7 +618,14 @@ class CustomToolService:
             return False
 
         self._global_tools[definition.name] = definition
+        self._declare(owner, definition)
         return True
+
+    def _declare(self, owner: str | None, definition: ToolDefinitionModel) -> None:
+        """Record ``owner``'s declaration of a tool. Only declarations that are served, or kept out on purpose, are
+        recorded: one that failed to build or register leaves the owner's previous declaration in place."""
+        if owner:
+            self._global_tool_declarations.setdefault(definition.name, {})[owner] = definition.model_dump()
 
     def _unregister_global_tool(self, name: str) -> bool:
         """Drop a registered custom tool so it can be re-added with a new signature.
@@ -696,6 +703,15 @@ class CustomToolService:
         # wrong raised ValueError out of register_global_tools and took the WHOLE BATCH of custom tools with
         # it — one tool with its optional argument listed first, and none of the plugin's tools appeared.
         # Sorting is stable, so the author's order survives within each group.
+        # A parameter whose name is not an identifier cannot appear in the signature FastMCP validates calls
+        # against. An optional one is left out (and warned about below); a required one would make every call
+        # fail, so the tool is refused with its name instead of being exposed unusable.
+        unusable = [p.name for p in definition.parameters if p.required and not p.name.isidentifier()]
+        if unusable:
+            raise ValueError(
+                f"Custom tool '{definition.name}' has required parameter(s) that are not valid identifiers: "
+                f"{', '.join(unusable)}"
+            )
         ordered = sorted(
             (p for p in definition.parameters if p.name.isidentifier()),
             key=lambda p: not p.required,

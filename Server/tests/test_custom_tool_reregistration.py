@@ -703,3 +703,40 @@ async def test_a_route_registration_reports_only_the_tools_fastmcp_serves():
     response = await scoped.routes["/register-tools"](
         _JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": tools}))
     assert json.loads(response.body)["registered"] == ["my_tool", "refused_tool"]
+
+
+def test_a_replacement_that_cannot_be_built_keeps_the_owners_declaration():
+    """A failed replacement is not recorded: the project still owns the schema that is served, and another
+    connected project cannot take the tool from it."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    live = {"aaaa1111", "bbbb2222"}
+
+    service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners=live)
+    with pytest.raises(ValueError, match="duplicate parameter name: 'ctx'"):
+        service._register_global_tool(_definition(["ctx"]), owner="aaaa1111", live_owners=live)
+    assert service._served_owners("my_tool") == {"aaaa1111"}
+
+    service._register_global_tool(_definition(["path"]), owner="bbbb2222", live_owners=live)
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+
+
+def test_a_required_parameter_that_cannot_be_exposed_refuses_the_tool():
+    """FastMCP validates calls against the signature, which can only hold identifiers: a required 'foo-bar' could
+    never be passed, so the tool is refused with the name; an optional one is left out, as before."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    required = ToolDefinitionModel(
+        name="dashed_tool", description="d",
+        parameters=[ToolParameterModel(name="foo-bar", description="x", required=True)])
+
+    with pytest.raises(ValueError, match="required parameter\\(s\\) that are not valid identifiers: foo-bar"):
+        service._register_global_tool(required)
+    assert "dashed_tool" not in service._global_tools
+
+    optional = ToolDefinitionModel(
+        name="dashed_tool", description="d",
+        parameters=[ToolParameterModel(name="name", description="n"),
+                    ToolParameterModel(name="foo-bar", description="x", required=False)])
+    assert service._register_global_tool(optional)
+    assert "dashed_tool" in service._global_tools
