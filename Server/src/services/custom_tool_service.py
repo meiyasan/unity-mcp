@@ -115,16 +115,19 @@ class CustomToolService:
                 )
 
             served_before = self._served_global_definitions()
-            registered, replaced = self._register_project_tools(
-                payload.project_id,
-                payload.tools,
-                project_hash=payload.project_hash,
-                live_owners=await self._hub_owner_keys(),
-            )
-            # As after a PluginHub registration: connected clients re-fetch the tool list, but only when the
-            # served definitions changed (not for a no-op, a kept schema or a restored one).
-            if self._served_global_definitions() != served_before:
-                await PluginHub._notify_mcp_tool_list_changed()
+            try:
+                registered, replaced = self._register_project_tools(
+                    payload.project_id,
+                    payload.tools,
+                    project_hash=payload.project_hash,
+                    live_owners=await self._hub_owner_keys(),
+                )
+            finally:
+                # As after a PluginHub registration: connected clients re-fetch the tool list, but only when the
+                # served definitions changed (not for a no-op, a kept schema or a restored one) — including the
+                # tools registered before one in the batch failed.
+                if self._served_global_definitions() != served_before:
+                    await PluginHub._notify_mcp_tool_list_changed()
 
             message = f"Registered {len(registered)} tool(s)"
             if replaced:

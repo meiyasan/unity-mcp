@@ -62,6 +62,9 @@ def _read_bounded_wait_env(name: str, default_s: float, max_s: float) -> float:
 _active_mcp_sessions: weakref.WeakSet = weakref.WeakSet()
 _session_tracking_installed = False
 
+# How long one MCP session may take to accept a tools/list_changed notification.
+_TOOL_LIST_NOTIFY_TIMEOUT_S = 5.0
+
 
 def _install_session_tracking() -> None:
     """Patch *MiddlewareServerSession* to track active MCP client sessions."""
@@ -659,8 +662,13 @@ class PluginHub(WebSocketEndpoint):
         if not sessions:
             return
         for session in sessions:
+            # Bounded per session: a stalled client must not hold up the others, nor the registration
+            # that triggered the notification.
             try:
-                await session.send_tool_list_changed()
+                await asyncio.wait_for(session.send_tool_list_changed(), timeout=_TOOL_LIST_NOTIFY_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.debug("MCP session did not take the tool list change within %.0fs; skipped",
+                             _TOOL_LIST_NOTIFY_TIMEOUT_S)
             except Exception:
                 logger.debug(
                     "Failed to notify MCP session of tool list change",
