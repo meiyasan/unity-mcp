@@ -27,6 +27,10 @@ _connection_lock = threading.Lock()
 FRAMED_MAX = 64 * 1024 * 1024
 
 
+class _DeadlineBeforeSend(TimeoutError):
+    """The command's deadline passed before its payload was written: nothing was sent, the socket is intact."""
+
+
 @dataclass
 class UnityConnection:
     """Manages the socket connection to the Unity Editor."""
@@ -144,9 +148,13 @@ class UnityConnection:
         """
         if not self.sock:
             return
-        orig_blocking = None
+        orig_timeout = None
+        peeked = False
         try:
-            orig_blocking = self.sock.getblocking()
+            # setblocking(True) would clear the timeout, leaving the next send and receive unbounded:
+            # restore the timeout itself instead.
+            orig_timeout = self.sock.gettimeout()
+            peeked = True
             self.sock.setblocking(False)
             data = self.sock.recv(1, socket.MSG_PEEK)
             if not data:
@@ -161,21 +169,35 @@ class UnityConnection:
                 pass
             self.sock = None
         finally:
-            if self.sock and orig_blocking is not None:
-                self.sock.setblocking(orig_blocking)
+            if self.sock and peeked:
+                self.sock.settimeout(orig_timeout)
 
-    def _read_exact(self, sock: socket.socket, count: int) -> bytes:
+    def _recv_by(self, sock: socket.socket, size: int, deadline: float | None, timeout: float | None) -> bytes:
+        """One recv that waits no longer than ``timeout`` nor past ``deadline`` (a monotonic() ceiling)."""
+        if deadline is not None:
+            if time.monotonic() >= deadline:
+                raise socket.timeout("Deadline reached while receiving")
+            sock.settimeout(self._cap_to_deadline(timeout or config.connection_timeout, deadline))
+        return sock.recv(size)
+
+    def _read_exact(self, sock: socket.socket, count: int, deadline: float | None = None,
+                    timeout: float | None = None) -> bytes:
         data = bytearray()
         while len(data) < count:
-            chunk = sock.recv(count - len(data))
+            chunk = self._recv_by(sock, count - len(data), deadline, timeout)
             if not chunk:
                 raise ConnectionError(
                     "Connection closed before reading expected bytes")
             data.extend(chunk)
         return bytes(data)
 
-    def receive_full_response(self, sock, buffer_size=config.buffer_size) -> bytes:
-        """Receive a complete response from Unity, handling chunked data."""
+    def receive_full_response(self, sock, buffer_size=config.buffer_size, deadline: float | None = None) -> bytes:
+        """Receive a complete response from Unity, handling chunked data.
+
+        With a ``deadline`` (a monotonic() ceiling), every read is capped to what is left of it, so a
+        response arriving in pieces cannot hold the connection past the deadline.
+        """
+        timeout = sock.gettimeout()
         if self.use_framing:
             # Heartbeat semantics: the Unity editor emits zero-length frames while
             # a long-running command is still executing. We tolerate a bounded
@@ -187,7 +209,7 @@ class UnityConnection:
             heartbeat_count = 0
             try:
                 while True:
-                    header = self._read_exact(sock, 8)
+                    header = self._read_exact(sock, 8, deadline, timeout)
                     payload_len = struct.unpack('>Q', header)[0]
                     if payload_len == 0:
                         heartbeat_count += 1
@@ -201,7 +223,7 @@ class UnityConnection:
                     if payload_len > FRAMED_MAX:
                         raise ValueError(
                             f"Invalid framed length: {payload_len}")
-                    payload = self._read_exact(sock, payload_len)
+                    payload = self._read_exact(sock, payload_len, deadline, timeout)
                     logger.debug(
                         f"Received framed response ({len(payload)} bytes)")
                     return payload
@@ -218,7 +240,7 @@ class UnityConnection:
         # Respect the socket's currently configured timeout
         try:
             while True:
-                chunk = sock.recv(buffer_size)
+                chunk = self._recv_by(sock, buffer_size, deadline, timeout)
                 if not chunk:
                     if not chunks:
                         raise Exception(
@@ -369,7 +391,7 @@ class UnityConnection:
                 self._ensure_live_connection()
                 # Ensure connected (handshake occurs within connect())
                 t_conn_start = time.time()
-                if not self.sock and not self.connect(self._cap_to_deadline(config.connection_timeout, deadline)):
+                if not self.sock and not self.connect(self._cap_to_deadline(config.connection_timeout, deadline), deadline=deadline):
                     raise ConnectionError("Could not connect to Unity")
                 logger.info("[TIMING-STDIO] connect took %.3fs command=%s", time.time() - t_conn_start, command_type)
 
@@ -382,42 +404,51 @@ class UnityConnection:
                         'params': params,
                     }).encode('utf-8')
 
-                # Send/receive are serialized to protect the shared socket
-                with self._io_lock:
+                # Send/receive are serialized to protect the shared socket. Wait for another command's
+                # turn only as long as this one's budget lasts, and do not send once it has run out.
+                lock_wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
+                if not self._io_lock.acquire(timeout=lock_wait):
+                    raise _DeadlineBeforeSend(
+                        f"Command '{command_type}' ran out of time waiting for the connection to Unity")
+                try:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise _DeadlineBeforeSend(
+                            f"Command '{command_type}' ran out of time before it was sent")
                     mode = 'framed' if self.use_framing else 'legacy'
                     with contextlib.suppress(Exception):
                         logger.debug(
                             f"send {len(payload)} bytes; mode={mode}; head={payload[:32].decode('utf-8', 'ignore')}")
-                    t_send_start = time.time()
-                    if self.use_framing:
-                        header = struct.pack('>Q', len(payload))
-                        self.sock.sendall(header)
-                        self.sock.sendall(payload)
-                    else:
-                        self.sock.sendall(payload)
-                    logger.info("[TIMING-STDIO] sendall took %.3fs command=%s", time.time() - t_send_start, command_type)
-
-                    # Cap the receive timeout to the remaining command budget (and use a
-                    # short timeout during retry bursts) so a wedged socket can't block
-                    # past the deadline.
-                    restore_timeout = None
-                    recv_timeout = 1.0 if attempt > 0 else self.sock.gettimeout()
+                    # Cap sends and receives to the remaining command budget (and use a short timeout
+                    # during retry bursts) so a wedged socket can't block past the deadline.
+                    original_timeout = self.sock.gettimeout()
+                    io_timeout = 1.0 if attempt > 0 else original_timeout
                     if deadline is not None:
-                        recv_timeout = self._cap_to_deadline(
-                            recv_timeout or config.connection_timeout, deadline)
-                    if recv_timeout is not None and recv_timeout != self.sock.gettimeout():
-                        restore_timeout = self.sock.gettimeout()
-                        self.sock.settimeout(recv_timeout)
+                        io_timeout = self._cap_to_deadline(
+                            io_timeout or config.connection_timeout, deadline)
                     try:
+                        self.sock.settimeout(io_timeout)
+                        t_send_start = time.time()
+                        if self.use_framing:
+                            header = struct.pack('>Q', len(payload))
+                            self.sock.sendall(header)
+                            self.sock.sendall(payload)
+                        else:
+                            self.sock.sendall(payload)
+                        logger.info("[TIMING-STDIO] sendall took %.3fs command=%s", time.time() - t_send_start, command_type)
+
+                        if deadline is not None:
+                            self.sock.settimeout(self._cap_to_deadline(io_timeout, deadline))
                         t_recv_start = time.time()
-                        response_data = self.receive_full_response(self.sock)
+                        response_data = self.receive_full_response(self.sock, deadline=deadline)
                         logger.info("[TIMING-STDIO] receive took %.3fs command=%s len=%d", time.time() - t_recv_start, command_type, len(response_data))
                         with contextlib.suppress(Exception):
                             logger.debug(
                                 f"recv {len(response_data)} bytes; mode={mode}")
                     finally:
-                        if restore_timeout is not None:
-                            self.sock.settimeout(restore_timeout)
+                        if self.sock:
+                            self.sock.settimeout(original_timeout)
+                finally:
+                    self._io_lock.release()
 
                 # Parse
                 if command_type == 'ping':
@@ -432,6 +463,9 @@ class UnityConnection:
                         'message', 'Unknown Unity error')
                     raise Exception(err)
                 return resp.get('result', {})
+            except _DeadlineBeforeSend:
+                # Nothing was sent, and the socket may be serving another command: leave it alone.
+                raise
             except Exception as e:
                 logger.warning(
                     f"Unity communication attempt {attempt+1} failed: {e}")

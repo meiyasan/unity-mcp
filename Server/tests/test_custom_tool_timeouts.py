@@ -279,3 +279,136 @@ def test_connect_caps_its_timeouts_to_the_deadline(monkeypatch):
     conn = unity_connection.UnityConnection(port=1, instance_id="Playground@abc")
     assert conn.connect(deadline=time.monotonic() + 0.5) is False
     assert timeouts and timeouts[0] <= 0.5
+
+
+def test_a_timed_out_custom_tool_carries_no_retry_hint():
+    """A timeout may follow a command that ran: the caller is told to check, not to resubmit."""
+    service = _make_service()
+    result = service._normalize_response(
+        {"success": False, "error": "late", "hint": "retry", "data": {"reason": "unity_timeout"}})
+    assert result.hint is None
+    assert result.data == {"reason": "unity_timeout"}
+
+
+def _call_in_thread(fn, limit_s):
+    """Run fn in a thread; return (elapsed, outcome) or fail if it is still blocked after limit_s."""
+    import threading
+    import time
+
+    outcome: dict = {}
+
+    def run():
+        try:
+            outcome["result"] = fn()
+        except Exception as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    started = time.monotonic()
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(limit_s)
+    assert not worker.is_alive(), f"still blocked after {limit_s} s"
+    return time.monotonic() - started, outcome
+
+
+def _stdio_connection(monkeypatch, tmp_path):
+    import socket
+
+    import transport.legacy.unity_connection as unity_connection
+
+    # No status files: the reload preflight must not see a real editor's.
+    monkeypatch.setattr(unity_connection.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(unity_connection.stdio_port_registry, "get_instances", lambda **_: [])
+    monkeypatch.setattr(unity_connection.stdio_port_registry, "get_instance", lambda *_: None)
+    monkeypatch.setattr(unity_connection.stdio_port_registry, "get_port", lambda *_: 1)
+    ours, unity = socket.socketpair()
+    ours.settimeout(30.0)
+    conn = unity_connection.UnityConnection(port=1, instance_id="Playground@abc")
+    conn.sock = ours
+    conn.use_framing = True
+    return conn, unity
+
+
+def test_a_command_waits_for_the_connection_only_while_its_budget_lasts(monkeypatch, tmp_path):
+    import time
+
+    conn, unity = _stdio_connection(monkeypatch, tmp_path)
+    unity.setblocking(False)
+    conn._io_lock.acquire()  # another command is using the connection
+    try:
+        elapsed, outcome = _call_in_thread(
+            lambda: conn.send_command("x", {}, max_attempts=0, deadline=time.monotonic() + 0.3), 3.0)
+    finally:
+        conn._io_lock.release()
+    assert isinstance(outcome.get("error"), TimeoutError)
+    assert elapsed < 1.0
+    assert conn.sock is not None, "the other command's socket must be left alone"
+    try:
+        sent = unity.recv(64)
+    except BlockingIOError:
+        sent = b""
+    assert sent == b"", "a command whose budget ran out waiting must not be sent"
+
+
+def test_a_response_in_pieces_is_cut_off_at_the_deadline(monkeypatch, tmp_path):
+    import struct
+    import threading
+    import time
+
+    conn, unity = _stdio_connection(monkeypatch, tmp_path)
+    stop = threading.Event()
+
+    def trickle():
+        unity.sendall(struct.pack(">Q", 1000))
+        while not stop.is_set():  # one byte every 0.2 s, never the whole payload
+            try:
+                unity.sendall(b"x")
+            except OSError:
+                return
+            time.sleep(0.2)
+
+    threading.Thread(target=trickle, daemon=True).start()
+    try:
+        elapsed, outcome = _call_in_thread(
+            lambda: conn.receive_full_response(conn.sock, deadline=time.monotonic() + 0.5), 5.0)
+    finally:
+        stop.set()
+    assert isinstance(outcome.get("error"), TimeoutError)
+    assert elapsed < 1.0
+
+
+def test_a_send_unity_does_not_read_is_cut_off_at_the_deadline(monkeypatch, tmp_path):
+    import time
+
+    conn, _unity = _stdio_connection(monkeypatch, tmp_path)
+    big = {"blob": "x" * (8 * 1024 * 1024)}  # far beyond the socket buffers; Unity reads none of it
+    elapsed, outcome = _call_in_thread(
+        lambda: conn.send_command("x", big, max_attempts=0, deadline=time.monotonic() + 0.5), 5.0)
+    assert isinstance(outcome.get("error"), TimeoutError)
+    assert elapsed < 1.5
+
+
+def test_the_liveness_check_keeps_the_socket_timeout(monkeypatch, tmp_path):
+    conn, _unity = _stdio_connection(monkeypatch, tmp_path)
+    conn._ensure_live_connection()
+    assert conn.sock is not None
+    assert conn.sock.gettimeout() == 30.0
+
+
+def test_a_reconnect_handshake_spends_the_command_budget(monkeypatch, tmp_path):
+    import time
+
+    import transport.legacy.unity_connection as unity_connection
+
+    conn, _unity = _stdio_connection(monkeypatch, tmp_path)
+    conn.sock = None  # the stale socket was dropped: send_command reconnects
+    seen: list = []
+
+    def fake_connect(self, connect_timeout=None, deadline=None):  # noqa: ARG001
+        seen.append(deadline)
+        return False
+
+    monkeypatch.setattr(unity_connection.UnityConnection, "connect", fake_connect)
+    deadline = time.monotonic() + 0.5
+    _call_in_thread(lambda: conn.send_command("x", {}, max_attempts=0, deadline=deadline), 3.0)
+    assert seen == [deadline]
