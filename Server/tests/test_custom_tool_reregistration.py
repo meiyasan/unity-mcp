@@ -485,3 +485,67 @@ async def test_a_hashless_registration_is_refused_while_its_hub_project_owns_glo
     assert refused.status_code == 409
     other = await route(_JsonRequest({"project_id": "bbbb2222", "tools": []}))
     assert other.status_code == 200, "another project owning nothing is not refused"
+
+
+def _hub_with_sessions(monkeypatch, owner_keys: set[str]):
+    """Configure PluginHub with a registry whose connected sessions have these owner keys."""
+    import asyncio
+
+    from transport.plugin_hub import PluginHub
+
+    class _Registry:
+        async def owner_keys(self):
+            return set(owner_keys)
+
+    monkeypatch.setattr(PluginHub, "_registry", _Registry())
+    monkeypatch.setattr(PluginHub, "_lock", asyncio.Lock())
+
+
+@pytest.mark.asyncio
+async def test_a_disconnected_hub_projects_schema_gives_way_to_a_route_registration(monkeypatch):
+    """A hub project that has disconnected does not hold its schema against a /register-tools registration."""
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+    route = mcp.routes["/register-tools"]
+
+    service.register_global_tools([_definition(["name"])], owner="aaaa1111", live_owners={"aaaa1111"})
+    _hub_with_sessions(monkeypatch, set())  # aaaa1111 has disconnected
+    response = await route(_JsonRequest(
+        {"project_id": "proj-b", "project_hash": "bbbb2222", "tools": [_definition(["path"]).model_dump()]}))
+
+    assert response.status_code == 200
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+
+
+@pytest.mark.asyncio
+async def test_a_connected_hub_projects_schema_is_kept_against_a_route_registration(monkeypatch):
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+    route = mcp.routes["/register-tools"]
+
+    service.register_global_tools([_definition(["name"])], owner="aaaa1111", live_owners={"aaaa1111"})
+    _hub_with_sessions(monkeypatch, {"aaaa1111"})
+    await route(_JsonRequest(
+        {"project_id": "proj-b", "project_hash": "bbbb2222", "tools": [_definition(["path"]).model_dump()]}))
+
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+
+
+@pytest.mark.asyncio
+async def test_a_hub_registration_keeps_route_registered_projects(monkeypatch):
+    """/register-tools has no connection whose end could be seen, so its projects count as connected: a hub
+    registration neither drops their declarations nor replaces the schema they serve."""
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+    route = mcp.routes["/register-tools"]
+
+    _hub_with_sessions(monkeypatch, set())
+    await route(_JsonRequest(
+        {"project_id": "proj-b", "project_hash": "bbbb2222", "tools": [_definition(["name"]).model_dump()]}))
+    service.register_global_tools([_definition(["path"])], owner="aaaa1111", live_owners={"aaaa1111"})
+
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+    assert service._served_owners("my_tool") == {"bbbb2222"}
