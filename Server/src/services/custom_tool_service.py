@@ -361,6 +361,8 @@ class CustomToolService:
     ) -> tuple[list[str], list[str]]:
         registered: list[str] = []
         replaced: list[str] = []
+        if not self._project_scoped_tools and project_hash:
+            self._release_undeclared_tools(project_hash, tools)
         for tool in tools:
             if self._is_registered(project_id, tool.name):
                 replaced.append(tool.name)
@@ -388,6 +390,8 @@ class CustomToolService:
         # Global custom tools are always registered, even when project-scoped tools
         # are enabled. Project-scoped tools can override globals by name, but
         # disabling globals entirely would break shared tooling that projects expect.
+        if owner:
+            self._release_undeclared_tools(owner, tools)
         builtin_names = self._get_builtin_tool_names()
         exposed: list[str] = []
         skipped: list[str] = []
@@ -413,6 +417,7 @@ class CustomToolService:
                     "Custom tool '%s' could not be registered and was skipped: %s",
                     tool.name,
                     exc,
+                    exc_info=True,
                 )
 
         # SAY WHAT HAPPENED. This path had no success log at all, so "no custom tools appeared" and "no custom
@@ -426,6 +431,24 @@ class CustomToolService:
                 ", ".join(exposed) if exposed else "none",
                 f" — skipped {len(skipped)}: {', '.join(skipped)}" if skipped else "",
             )
+
+    @staticmethod
+    def _owner_id(owner_key: str) -> str:
+        """Normalize an owner key: the project hash ignores case, a user id (``user/hash``) keeps it."""
+        user, sep, project_hash = owner_key.rpartition("/")
+        return f"{user}{sep}{project_hash.lower()}"
+
+    def _release_undeclared_tools(self, owner: str, tools: list[ToolDefinitionModel]) -> None:
+        """A project's tool list is complete: it no longer owns the tools it has stopped declaring.
+
+        Left in place, a stale owner would count as a connected project serving that schema, and refuse
+        another project's changed one.
+        """
+        owner = self._owner_id(owner)
+        declared = {tool.name for tool in tools}
+        for name, owners in self._global_tool_owners.items():
+            if name not in declared:
+                owners.discard(owner)
 
     def _get_builtin_tool_names(self) -> set[str]:
         return {tool["name"] for tool in get_registered_tools()}
@@ -442,7 +465,7 @@ class CustomToolService:
         or the previous one, kept because another connected project serves it, because it could not be
         removed, or restored because FastMCP refused this one. False when FastMCP serves neither.
         """
-        owner = owner.lower() if owner else None
+        owner = self._owner_id(owner) if owner else None
         existing = self._global_tools.get(definition.name)
         replaced = None
         previous_owners: set[str] = set()
@@ -458,7 +481,7 @@ class CustomToolService:
             previous_owners = self._global_tool_owners.get(definition.name, set())
             others = previous_owners - {owner} if owner else set(previous_owners)
             if live_owners is not None:
-                others &= {h.lower() for h in live_owners}
+                others &= {self._owner_id(key) for key in live_owners}
             if others:
                 logger.warning(
                     "Custom tool '%s' from project %s declares a different schema than connected project(s) %s; "
