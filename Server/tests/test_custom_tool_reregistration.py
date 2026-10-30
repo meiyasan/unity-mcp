@@ -740,3 +740,20 @@ def test_a_required_parameter_that_cannot_be_exposed_refuses_the_tool():
                     ToolParameterModel(name="foo-bar", description="x", required=False)])
     assert service._register_global_tool(optional)
     assert "dashed_tool" in service._global_tools
+
+
+def test_a_kept_out_schema_that_cannot_be_built_keeps_the_owners_declaration():
+    """A and B serve the same schema; A's changed one, kept out while B serves the old, cannot be built (ctx).
+    It is not recorded: A still owns the served schema, so B cannot then replace it under A."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    live = {"aaaa1111", "bbbb2222"}
+
+    service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners=live)
+    service._register_global_tool(_definition(["name"]), owner="bbbb2222", live_owners=live)
+    with pytest.raises(ValueError, match="duplicate parameter name: 'ctx'"):
+        service._register_global_tool(_definition(["ctx"]), owner="aaaa1111", live_owners=live)
+    assert service._served_owners("my_tool") == {"aaaa1111", "bbbb2222"}
+
+    service._register_global_tool(_definition(["path"]), owner="bbbb2222", live_owners=live)
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]

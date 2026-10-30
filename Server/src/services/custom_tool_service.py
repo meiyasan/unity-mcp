@@ -560,7 +560,9 @@ class CustomToolService:
                     ", ".join(sorted(others)),
                 )
                 # Recorded although another schema is served: this project owns the tool as soon as its schema is
-                # the one served, whoever registers it.
+                # the one served, whoever registers it. Only a schema that could be served is recorded: one that
+                # cannot be built raises here and leaves the project's previous declaration, and its ownership.
+                self._build_global_tool_handler(definition)
                 self._declare(owner, definition)
                 return True
             # Unity re-registers on every domain reload, so the newest definition is authoritative. Keeping the
