@@ -114,12 +114,17 @@ class CustomToolService:
                     status_code=409,
                 )
 
+            served_before = self._served_global_definitions()
             registered, replaced = self._register_project_tools(
                 payload.project_id,
                 payload.tools,
                 project_hash=payload.project_hash,
                 live_owners=await self._hub_owner_keys(),
             )
+            # As after a PluginHub registration: connected clients re-fetch the tool list, but only when the
+            # served definitions changed (not for a no-op, a kept schema or a restored one).
+            if self._served_global_definitions() != served_before:
+                await PluginHub._notify_mcp_tool_list_changed()
 
             message = f"Registered {len(registered)} tool(s)"
             if replaced:
@@ -468,6 +473,9 @@ class CustomToolService:
         """Normalize an owner key: the project hash ignores case, a user id (``user/hash``) keeps it."""
         user, sep, project_hash = owner_key.rpartition("/")
         return f"{user}{sep}{project_hash.lower()}"
+
+    def _served_global_definitions(self) -> dict[str, dict]:
+        return {name: definition.model_dump() for name, definition in self._global_tools.items()}
 
     async def _hub_owner_keys(self) -> set[str] | None:
         """The owner keys of every connected PluginHub session; None when no hub is running."""
