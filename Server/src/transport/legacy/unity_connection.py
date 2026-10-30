@@ -293,6 +293,10 @@ class UnityConnection:
             logger.error(f"Error during receive: {str(e)}")
             raise
 
+    def _lock_wait(self, deadline: float | None) -> float:
+        """How long to wait for the I/O lock: until the deadline (-1, without limit, when there is none)."""
+        return -1 if deadline is None else max(0.0, deadline - time.monotonic())
+
     def _cap_to_deadline(self, timeout: float, deadline: float | None, floor: float = 0.05) -> float:
         """Shrink a blocking timeout to whatever budget remains before the deadline."""
         if deadline is None:
@@ -367,8 +371,13 @@ class UnityConnection:
             if status and (status.get('reloading') or status.get('reason') == 'reloading'):
                 # Reload invalidates the socket; drop it under the I/O lock so this
                 # close is serialized against the send/recv block, then reconnect next call.
-                with self._io_lock:
-                    self.disconnect()
+                # Wait for the lock only while the budget lasts: if another command still
+                # holds it, that command owns the socket and the reload ends its exchange.
+                if self._io_lock.acquire(timeout=self._lock_wait(deadline)):
+                    try:
+                        self.disconnect()
+                    finally:
+                        self._io_lock.release()
                 return MCPResponse(
                     success=False,
                     error="Unity is reloading; please retry",
@@ -406,8 +415,7 @@ class UnityConnection:
 
                 # Send/receive are serialized to protect the shared socket. Wait for another command's
                 # turn only as long as this one's budget lasts, and do not send once it has run out.
-                lock_wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
-                if not self._io_lock.acquire(timeout=lock_wait):
+                if not self._io_lock.acquire(timeout=self._lock_wait(deadline)):
                     raise _DeadlineBeforeSend(
                         f"Command '{command_type}' ran out of time waiting for the connection to Unity")
                 try:
