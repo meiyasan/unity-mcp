@@ -597,12 +597,9 @@ class CustomToolService:
                 "Custom tool '%s' re-registered with a changed schema — replacing the previous definition.",
                 definition.name,
             )
-            if not self._unregister_global_tool(definition.name):
-                # Registering on top of a tool FastMCP still routes would leave the two out of step; the
-                # previous definition keeps serving (warned about in _unregister_global_tool).
-                return True
-            replaced = existing
 
+        # Prepared before the previous definition is removed: a definition whose handler cannot be built (a
+        # parameter named ctx, say) then leaves the working tool in place.
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
         wrapped = telemetry_tool(definition.name)(wrapped)
@@ -623,6 +620,13 @@ class CustomToolService:
         wrapped.__annotations__ = self._build_annotations(definition)
         if hasattr(wrapped, "__wrapped__"):
             del wrapped.__wrapped__
+
+        if existing:
+            if not self._unregister_global_tool(definition.name):
+                # Registering on top of a tool FastMCP still routes would leave the two out of step; the
+                # previous definition keeps serving (warned about in _unregister_global_tool).
+                return True
+            replaced = existing
 
         try:
             wrapped = self._mcp.tool(

@@ -653,3 +653,17 @@ async def test_clients_hear_of_the_tools_registered_before_one_failed(monkeypatc
 
     assert "my_tool" in service._global_tools
     assert notified == [True], "the tool served before the failure is announced"
+
+
+def test_a_changed_definition_that_cannot_be_built_leaves_the_working_tool():
+    """The replacement is prepared before the previous tool is removed: a parameter named ctx, which the
+    handler's own ctx collides with, fails the replacement and keeps the working tool served."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+
+    assert service._register_global_tool(_definition(["name"]))
+    with pytest.raises(Exception):
+        service._register_global_tool(_definition(["ctx"]))
+
+    assert mcp.removed == []
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
