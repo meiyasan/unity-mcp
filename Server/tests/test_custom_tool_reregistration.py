@@ -662,7 +662,7 @@ def test_a_changed_definition_that_cannot_be_built_leaves_the_working_tool():
     service = CustomToolService(mcp, project_scoped_tools=False)
 
     assert service._register_global_tool(_definition(["name"]))
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="duplicate parameter name: 'ctx'"):
         service._register_global_tool(_definition(["ctx"]))
 
     assert mcp.removed == []
