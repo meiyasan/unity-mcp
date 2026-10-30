@@ -625,6 +625,8 @@ async def test_a_stalled_client_does_not_hold_up_the_tool_list_notification(monk
 
 @pytest.mark.asyncio
 async def test_one_broken_tool_does_not_cost_the_rest_of_a_route_registration(monkeypatch):
+    import json
+
     from transport.plugin_hub import PluginHub
 
     mcp = _RouteMcp()
@@ -652,6 +654,7 @@ async def test_one_broken_tool_does_not_cost_the_rest_of_a_route_registration(mo
     response = await route(_JsonRequest(body))
 
     assert response.status_code == 200
+    assert json.loads(response.body)["registered"] == ["my_tool", "later_tool"], "the skipped tool is not reported"
     assert "my_tool" in service._global_tools
     assert "later_tool" in service._global_tools, "a broken tool must not cost the rest of the batch"
     assert "broken_tool" not in service._global_tools
@@ -670,3 +673,33 @@ def test_a_changed_definition_that_cannot_be_built_leaves_the_working_tool():
 
     assert mcp.removed == []
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
+
+
+@pytest.mark.asyncio
+async def test_a_route_registration_reports_only_the_tools_fastmcp_serves():
+    """A tool FastMCP refuses (and that has no previous definition to fall back on) is not reported as registered;
+    in project-scoped mode, where no global tool is registered, every tool still counts."""
+    import json
+
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    refused = mcp.tool
+
+    def refusing(name=None, description=None):
+        if name == "refused_tool":
+            raise ValueError("conflict")
+        return refused(name=name, description=description)
+
+    mcp.tool = refusing
+    route = mcp.routes["/register-tools"]
+    tools = [_definition(["name"]).model_dump(),
+             ToolDefinitionModel(name="refused_tool", description="refused").model_dump()]
+
+    response = await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": tools}))
+    assert json.loads(response.body)["registered"] == ["my_tool"]
+
+    scoped = _RouteMcp()
+    CustomToolService(scoped, project_scoped_tools=True)
+    response = await scoped.routes["/register-tools"](
+        _JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": tools}))
+    assert json.loads(response.body)["registered"] == ["my_tool", "refused_tool"]

@@ -366,11 +366,12 @@ class CustomToolService:
             if self._is_registered(project_id, tool.name):
                 replaced.append(tool.name)
             self._register_tool(project_id, tool)
-            registered.append(tool.name)
             if not self._project_scoped_tools:
-                # As in register_global_tools: one malformed tool is skipped, not the rest of the batch.
+                # As in register_global_tools: one malformed tool is skipped, not the rest of the batch, and only a
+                # tool FastMCP serves is reported as registered.
                 try:
-                    self._register_global_tool(tool, owner=owner, live_owners=live)
+                    if not self._register_global_tool(tool, owner=owner, live_owners=live):
+                        continue
                 except Exception as exc:
                     logger.warning(
                         "Custom tool '%s' could not be registered and was skipped: %s",
@@ -378,6 +379,8 @@ class CustomToolService:
                         exc,
                         exc_info=True,
                     )
+                    continue
+            registered.append(tool.name)
 
         if project_hash:
             self._hash_to_project[project_hash.lower()] = project_id
