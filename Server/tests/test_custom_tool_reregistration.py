@@ -624,7 +624,7 @@ async def test_a_stalled_client_does_not_hold_up_the_tool_list_notification(monk
 
 
 @pytest.mark.asyncio
-async def test_clients_hear_of_the_tools_registered_before_one_failed(monkeypatch):
+async def test_one_broken_tool_does_not_cost_the_rest_of_a_route_registration(monkeypatch):
     from transport.plugin_hub import PluginHub
 
     mcp = _RouteMcp()
@@ -645,14 +645,17 @@ async def test_clients_hear_of_the_tools_registered_before_one_failed(monkeypatc
 
     monkeypatch.setattr(service, "_build_signature", failing_signature)
     broken = ToolDefinitionModel(name="broken_tool", description="broken")
+    after = ToolDefinitionModel(name="later_tool", description="registered after the broken one")
     body = {"project_id": "proj", "project_hash": "aaaa1111",
-            "tools": [_definition(["name"]).model_dump(), broken.model_dump()]}
+            "tools": [_definition(["name"]).model_dump(), broken.model_dump(), after.model_dump()]}
 
-    with pytest.raises(RuntimeError):
-        await route(_JsonRequest(body))
+    response = await route(_JsonRequest(body))
 
+    assert response.status_code == 200
     assert "my_tool" in service._global_tools
-    assert notified == [True], "the tool served before the failure is announced"
+    assert "later_tool" in service._global_tools, "a broken tool must not cost the rest of the batch"
+    assert "broken_tool" not in service._global_tools
+    assert notified == [True], "the tools served around the failure are announced"
 
 
 def test_a_changed_definition_that_cannot_be_built_leaves_the_working_tool():

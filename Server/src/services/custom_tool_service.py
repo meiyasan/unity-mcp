@@ -368,7 +368,16 @@ class CustomToolService:
             self._register_tool(project_id, tool)
             registered.append(tool.name)
             if not self._project_scoped_tools:
-                self._register_global_tool(tool, owner=owner, live_owners=live)
+                # As in register_global_tools: one malformed tool is skipped, not the rest of the batch.
+                try:
+                    self._register_global_tool(tool, owner=owner, live_owners=live)
+                except Exception as exc:
+                    logger.warning(
+                        "Custom tool '%s' could not be registered and was skipped: %s",
+                        tool.name,
+                        exc,
+                        exc_info=True,
+                    )
 
         if project_hash:
             self._hash_to_project[project_hash.lower()] = project_id
