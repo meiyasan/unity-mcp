@@ -412,3 +412,22 @@ def test_a_reconnect_handshake_spends_the_command_budget(monkeypatch, tmp_path):
     deadline = time.monotonic() + 0.5
     _call_in_thread(lambda: conn.send_command("x", {}, max_attempts=0, deadline=deadline), 3.0)
     assert seen == [deadline]
+
+
+def test_the_reload_preflight_waits_for_the_connection_only_while_the_budget_lasts(monkeypatch, tmp_path):
+    import json
+    import time
+
+    conn, _unity = _stdio_connection(monkeypatch, tmp_path)
+    status_dir = tmp_path / ".unity-mcp"
+    status_dir.mkdir()
+    (status_dir / "unity-mcp-status-abc.json").write_text(json.dumps({"reloading": True}))
+    conn._io_lock.acquire()  # another command is using the connection
+    try:
+        elapsed, outcome = _call_in_thread(
+            lambda: conn.send_command("x", {}, max_attempts=0, deadline=time.monotonic() + 0.3), 3.0)
+    finally:
+        conn._io_lock.release()
+    assert elapsed < 1.0
+    assert outcome["result"].hint == "retry"
+    assert conn.sock is not None, "the socket of the command holding the lock is left alone"
