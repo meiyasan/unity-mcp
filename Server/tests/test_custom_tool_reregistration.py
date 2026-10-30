@@ -326,7 +326,7 @@ def test_a_disconnected_projects_schema_gives_way():
 
     assert mcp.removed == ["my_tool"]
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
-    assert service._global_tool_owners["my_tool"] == {"bbbb2222"}
+    assert service._served_owners("my_tool") == {"bbbb2222"}
 
 
 def test_user_ids_differing_only_in_case_are_different_owners():
@@ -358,7 +358,7 @@ def test_a_tool_a_project_stops_declaring_is_no_longer_its_own():
     service.register_global_tools([_definition(["path"])], owner="bbbb2222", live_owners=live)
 
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
-    assert service._global_tool_owners["my_tool"] == {"bbbb2222"}
+    assert service._served_owners("my_tool") == {"bbbb2222"}
 
 
 def test_a_skipped_tool_is_logged_with_its_traceback(caplog):
@@ -393,7 +393,7 @@ def test_projects_sharing_a_tool_can_both_move_to_a_new_schema():
 
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
     service._register_global_tool(_definition(["path"]), owner="aaaa1111", live_owners=live)
-    assert service._global_tool_owners["my_tool"] == {"aaaa1111", "bbbb2222"}
+    assert service._served_owners("my_tool") == {"aaaa1111", "bbbb2222"}
 
 
 class _RouteMcp(_RecordingMcp):
@@ -435,11 +435,11 @@ async def test_a_hashless_registration_is_refused_while_the_project_owns_global_
     refused = await route(_JsonRequest({"project_id": "proj", "tools": []}))
     assert refused.status_code == 409
     assert json.loads(refused.body)["success"] is False
-    assert service._global_tool_owners["my_tool"] == {"aaaa1111"}, "a refused request registers nothing"
+    assert service._served_owners("my_tool") == {"aaaa1111"}, "a refused request registers nothing"
 
     released = await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": []}))
     assert released.status_code == 200
-    assert service._global_tool_owners["my_tool"] == set()
+    assert service._served_owners("my_tool") == set()
 
 
 @pytest.mark.asyncio
@@ -452,3 +452,36 @@ async def test_project_scoped_mode_keeps_accepting_hashless_registrations():
     await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": [tool]}))
     response = await route(_JsonRequest({"project_id": "proj", "tools": [tool]}))
     assert response.status_code == 200
+
+
+def test_a_project_whose_schema_is_adopted_owns_it_without_registering_again():
+    """A moves to a new schema first and is kept out while B serves the old one; B then moves to the same schema.
+    A owns the replacement at once: after B leaves, a third project cannot take the tool from A."""
+    mcp = _RecordingMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    live = {"aaaa1111", "bbbb2222"}
+
+    service._register_global_tool(_definition(["name"]), owner="aaaa1111", live_owners=live)
+    service._register_global_tool(_definition(["name"]), owner="bbbb2222", live_owners=live)
+    service._register_global_tool(_definition(["path"]), owner="aaaa1111", live_owners=live)
+    service._register_global_tool(_definition(["path"]), owner="bbbb2222", live_owners=live)
+    assert service._served_owners("my_tool") == {"aaaa1111", "bbbb2222"}
+
+    service._register_global_tool(_definition(["other"]), owner="cccc3333", live_owners={"aaaa1111", "cccc3333"})
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+
+
+@pytest.mark.asyncio
+async def test_a_hashless_registration_is_refused_while_its_hub_project_owns_global_tools():
+    """A project registered through PluginHub is known by its hash, which is its project id: a hash-less
+    /register-tools request naming it is refused too, not passed through without releasing anything."""
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+    route = mcp.routes["/register-tools"]
+
+    service.register_global_tools([_definition(["name"])], owner="user-a/AAAA1111", live_owners={"user-a/AAAA1111"})
+    refused = await route(_JsonRequest({"project_id": "aaaa1111", "tools": []}))
+    assert refused.status_code == 409
+    other = await route(_JsonRequest({"project_id": "bbbb2222", "tools": []}))
+    assert other.status_code == 200, "another project owning nothing is not refused"

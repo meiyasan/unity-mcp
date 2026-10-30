@@ -69,8 +69,9 @@ class CustomToolService:
         self._project_tools: dict[str, dict[str, ToolDefinitionModel]] = {}
         self._hash_to_project: dict[str, str] = {}
         self._global_tools: dict[str, ToolDefinitionModel] = {}
-        # Project hashes that registered each global tool's current definition.
-        self._global_tool_owners: dict[str, set[str]] = {}
+        # What each project (owner key) last declared for each global tool. A tool's owners are the projects
+        # whose declaration is the definition being served.
+        self._global_tool_declarations: dict[str, dict[str, dict]] = {}
         self._register_http_routes()
 
     @classmethod
@@ -363,7 +364,7 @@ class CustomToolService:
         # are enabled. Project-scoped tools can override globals by name, but
         # disabling globals entirely would break shared tooling that projects expect.
         if owner:
-            self._release_undeclared_tools(owner, tools)
+            self._release_undeclared_tools(owner, tools, live_owners)
         builtin_names = self._get_builtin_tool_names()
         exposed: list[str] = []
         skipped: list[str] = []
@@ -410,24 +411,54 @@ class CustomToolService:
         user, sep, project_hash = owner_key.rpartition("/")
         return f"{user}{sep}{project_hash.lower()}"
 
+    def _served_owners(self, name: str) -> set[str]:
+        """The projects whose declaration of ``name`` is the definition being served."""
+        served = self._global_tools.get(name)
+        if served is None:
+            return set()
+        served_dump = served.model_dump()
+        return {
+            owner
+            for owner, declared in self._global_tool_declarations.get(name, {}).items()
+            if declared == served_dump
+        }
+
     def _project_owns_global_tools(self, project_id: str) -> bool:
-        """Whether an instance (hash) of ``project_id`` owns a global tool. Project-scoped mode tracks no owners."""
+        """Whether an instance of ``project_id`` has declared a global tool. Project-scoped mode tracks none.
+
+        An instance is known by its hash: one mapped to ``project_id`` by an earlier hashed registration, or
+        ``project_id`` itself, which is the hash for a project registered through PluginHub.
+        """
         if self._project_scoped_tools:
             return False
         hashes = {h for h, pid in self._hash_to_project.items() if pid == project_id}
-        return any(owners & hashes for owners in self._global_tool_owners.values())
+        hashes.add(project_id.lower())
+        return any(
+            owner.rpartition("/")[2] in hashes
+            for declarations in self._global_tool_declarations.values()
+            for owner in declarations
+        )
 
-    def _release_undeclared_tools(self, owner: str, tools: list[ToolDefinitionModel]) -> None:
-        """A project's tool list is complete: it no longer owns the tools it has stopped declaring.
+    def _release_undeclared_tools(
+        self,
+        owner: str,
+        tools: list[ToolDefinitionModel],
+        live_owners: set[str] | None = None,
+    ) -> None:
+        """A project's tool list is complete: it no longer declares the tools missing from it.
 
-        Left in place, a stale owner would count as a connected project serving that schema, and refuse
-        another project's changed one.
+        Left in place, a stale declaration would count as a connected project serving that schema, and refuse
+        another project's changed one. Declarations of projects no longer connected are dropped too.
         """
         owner = self._owner_id(owner)
         declared = {tool.name for tool in tools}
-        for name, owners in self._global_tool_owners.items():
+        live = {self._owner_id(key) for key in live_owners} if live_owners is not None else None
+        for name, declarations in self._global_tool_declarations.items():
             if name not in declared:
-                owners.discard(owner)
+                declarations.pop(owner, None)
+            if live is not None:
+                for gone in [key for key in declarations if key not in live and key != owner]:
+                    del declarations[gone]
 
     def _get_builtin_tool_names(self) -> set[str]:
         return {tool["name"] for tool in get_registered_tools()}
@@ -445,28 +476,24 @@ class CustomToolService:
         removed, or restored because FastMCP refused this one. False when FastMCP serves neither.
         """
         owner = self._owner_id(owner) if owner else None
+        if owner:
+            # Recorded whatever is served: a project whose schema is kept out for now owns the tool as soon as
+            # its schema is the one served, whoever registers it.
+            self._global_tool_declarations.setdefault(definition.name, {})[owner] = definition.model_dump()
         existing = self._global_tools.get(definition.name)
         replaced = None
-        previous_owners: set[str] = set()
         if existing:
             if existing.model_dump() == definition.model_dump():
-                if owner:
-                    self._global_tool_owners.setdefault(definition.name, set()).add(owner)
                 return True
             # FastMCP serves one schema per tool name, and validates a call against it before the handler
-            # routes it to a project. Replacing the definition another connected project registered would make
+            # routes it to a project. Replacing the definition another connected project declares would make
             # that project's calls fail validation, and two such projects reloading in turn would swap it back
-            # and forth; keep it, as before. Owners no longer connected do not count.
-            previous_owners = self._global_tool_owners.get(definition.name, set())
-            others = previous_owners - {owner} if owner else set(previous_owners)
+            # and forth; keep it, as before. Projects no longer connected, and projects that now declare
+            # another schema, do not hold it: projects sharing a tool that all move to a new schema replace it.
+            others = self._served_owners(definition.name) - {owner}
             if live_owners is not None:
                 others &= {self._owner_id(key) for key in live_owners}
             if others:
-                # This project no longer declares the schema being served, so it no longer holds it: when the
-                # other owners update to the same new schema in turn, they replace it instead of each keeping
-                # the old one on the other's behalf.
-                if owner:
-                    previous_owners.discard(owner)
                 logger.warning(
                     "Custom tool '%s' from project %s declares a different schema than connected project(s) %s; "
                     "keeping theirs (one schema per tool name is served). Call this project's version through "
@@ -523,14 +550,10 @@ class CustomToolService:
             )
             if replaced is not None:
                 # The previous definition was already removed: put it back rather than lose a working tool.
-                restored = self._register_global_tool(replaced)
-                if restored:
-                    self._global_tool_owners[definition.name] = previous_owners
-                return restored
+                return self._register_global_tool(replaced)
             return False
 
         self._global_tools[definition.name] = definition
-        self._global_tool_owners[definition.name] = {owner} if owner else set()
         return True
 
     def _unregister_global_tool(self, name: str) -> bool:
