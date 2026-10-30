@@ -568,3 +568,26 @@ async def test_a_route_registration_does_not_keep_the_same_hashs_hub_session_ali
     service.register_global_tools([_definition(["path"])], owner="bbbb2222", live_owners={"bbbb2222"})
 
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
+
+
+@pytest.mark.asyncio
+async def test_register_tools_notifies_clients_only_when_the_served_tools_change(monkeypatch):
+    from transport.plugin_hub import PluginHub
+
+    mcp = _RouteMcp()
+    CustomToolService(mcp, project_scoped_tools=False)
+    route = mcp.routes["/register-tools"]
+    notified: list[bool] = []
+
+    async def record():
+        notified.append(True)
+
+    monkeypatch.setattr(PluginHub, "_notify_mcp_tool_list_changed", record)
+    body = {"project_id": "proj", "project_hash": "aaaa1111", "tools": [_definition(["name"]).model_dump()]}
+
+    await route(_JsonRequest(body))
+    assert notified == [True], "a newly served tool is announced"
+    await route(_JsonRequest(body))
+    assert notified == [True], "an identical re-registration changes nothing and is not announced"
+    await route(_JsonRequest({**body, "tools": [_definition(["path"]).model_dump()]}))
+    assert notified == [True, True], "a changed schema is announced"
