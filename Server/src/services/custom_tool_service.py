@@ -46,6 +46,10 @@ async def get_user_id_from_context(ctx: Context) -> str | None:
     return user_id if isinstance(user_id, str) and user_id else None
 
 
+# Prefix of the owner keys of projects registered over /register-tools (see _route_owner_key).
+_ROUTE_OWNER = "<register-tools>"
+
+
 class RegisterToolsPayload(BaseModel):
     project_id: str
     project_hash: str | None = None
@@ -72,8 +76,8 @@ class CustomToolService:
         # What each project (owner key) last declared for each global tool. A tool's owners are the projects
         # whose declaration is the definition being served.
         self._global_tool_declarations: dict[str, dict[str, dict]] = {}
-        # Projects registered over /register-tools. That route has no connection whose end could be observed,
-        # so they count as connected beside the PluginHub sessions.
+        # Projects registered over /register-tools, by route owner key. That route has no connection whose end
+        # could be observed, so they count as connected beside the PluginHub sessions.
         self._route_owners: set[str] = set()
         self._register_http_routes()
 
@@ -345,17 +349,18 @@ class CustomToolService:
         registered: list[str] = []
         replaced: list[str] = []
         live: set[str] | None = None
-        if not self._project_scoped_tools and project_hash:
-            self._route_owners.add(self._owner_id(project_hash))
+        owner = self._route_owner_key(project_hash) if project_hash else None
+        if not self._project_scoped_tools and owner:
+            self._route_owners.add(owner)
             live = self._with_route_owners(live_owners)
-            self._release_undeclared_tools(project_hash, tools, live)
+            self._release_undeclared_tools(owner, tools, live)
         for tool in tools:
             if self._is_registered(project_id, tool.name):
                 replaced.append(tool.name)
             self._register_tool(project_id, tool)
             registered.append(tool.name)
             if not self._project_scoped_tools:
-                self._register_global_tool(tool, owner=project_hash, live_owners=live)
+                self._register_global_tool(tool, owner=owner, live_owners=live)
 
         if project_hash:
             self._hash_to_project[project_hash.lower()] = project_id
@@ -430,6 +435,12 @@ class CustomToolService:
         if not PluginHub.is_configured():
             return None
         return await PluginHub._registry.owner_keys()
+
+    def _route_owner_key(self, project_hash: str) -> str:
+        """Owner key of a project registered over /register-tools, apart from the same hash's PluginHub session:
+        the route's projects always count as connected, which must not keep a disconnected session's declarations
+        alive. The project hash stays the last ``/`` part, as in every owner key."""
+        return f"{_ROUTE_OWNER}/{project_hash.lower()}"
 
     def _with_route_owners(self, live_owners: set[str] | None) -> set[str] | None:
         """Connected owners: the given hub sessions plus the projects registered over /register-tools."""

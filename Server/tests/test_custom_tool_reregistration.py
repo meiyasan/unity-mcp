@@ -435,7 +435,7 @@ async def test_a_hashless_registration_is_refused_while_the_project_owns_global_
     refused = await route(_JsonRequest({"project_id": "proj", "tools": []}))
     assert refused.status_code == 409
     assert json.loads(refused.body)["success"] is False
-    assert service._served_owners("my_tool") == {"aaaa1111"}, "a refused request registers nothing"
+    assert service._served_owners("my_tool") == {"<register-tools>/aaaa1111"}, "a refused request registers nothing"
 
     released = await route(_JsonRequest({"project_id": "proj", "project_hash": "aaaa1111", "tools": []}))
     assert released.status_code == 200
@@ -548,4 +548,23 @@ async def test_a_hub_registration_keeps_route_registered_projects(monkeypatch):
     service.register_global_tools([_definition(["path"])], owner="aaaa1111", live_owners={"aaaa1111"})
 
     assert [p.name for p in service._global_tools["my_tool"].parameters] == ["name"]
-    assert service._served_owners("my_tool") == {"bbbb2222"}
+    assert service._served_owners("my_tool") == {"<register-tools>/bbbb2222"}
+
+
+@pytest.mark.asyncio
+async def test_a_route_registration_does_not_keep_the_same_hashs_hub_session_alive(monkeypatch):
+    """A hash registered over /register-tools (with no tools) and through PluginHub: the route's registration
+    always counts as connected, but must not keep the hub session's declaration alive once it disconnects."""
+    mcp = _RouteMcp()
+    service = CustomToolService(mcp, project_scoped_tools=False)
+    service._get_builtin_tool_names = lambda: set()
+    route = mcp.routes["/register-tools"]
+
+    _hub_with_sessions(monkeypatch, {"aaaa1111"})
+    await route(_JsonRequest({"project_id": "proj-a", "project_hash": "aaaa1111", "tools": []}))
+    service.register_global_tools([_definition(["name"])], owner="aaaa1111", live_owners={"aaaa1111"})
+
+    # The hub session disconnects; another project changes the tool's schema.
+    service.register_global_tools([_definition(["path"])], owner="bbbb2222", live_owners={"bbbb2222"})
+
+    assert [p.name for p in service._global_tools["my_tool"].parameters] == ["path"]
