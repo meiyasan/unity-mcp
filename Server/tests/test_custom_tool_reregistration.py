@@ -235,7 +235,20 @@ async def _register_tools_through_the_hub(monkeypatch, sessions: list[dict], fro
     monkeypatch.setattr(PluginHub, "_connections", {from_session: websocket})
     monkeypatch.setattr(PluginHub, "_sync_server_tool_visibility", classmethod(lambda cls, tools: None))
 
-    async def notify(cls):
+    # A client is connected and nothing has been published yet: the hub notifies only the sessions that have
+    # not seen the published tool list, and only when that list changed.
+    import transport.plugin_hub as plugin_hub
+
+    class _Client:
+        pass
+
+    client = _Client()
+    monkeypatch.setattr(plugin_hub, "_active_mcp_sessions", plugin_hub.weakref.WeakSet([client]))
+    monkeypatch.setattr(PluginHub, "_mcp", None)
+    monkeypatch.setattr(PluginHub, "_published_tool_fingerprint", None)
+    monkeypatch.setattr(PluginHub, "_pending_tool_list_notifications", plugin_hub.weakref.WeakSet())
+
+    async def notify(cls, sessions=None):
         order.append("notify")
 
     monkeypatch.setattr(PluginHub, "_notify_mcp_tool_list_changed", classmethod(notify))
@@ -614,7 +627,8 @@ async def test_a_stalled_client_does_not_hold_up_the_tool_list_notification(monk
     stalled, healthy = _Session(stall=True), _Session(stall=False)
     sessions = plugin_hub.weakref.WeakSet([stalled, healthy])
     monkeypatch.setattr(plugin_hub, "_active_mcp_sessions", sessions)
-    monkeypatch.setattr(plugin_hub, "_TOOL_LIST_NOTIFY_TIMEOUT_S", 0.1, raising=False)
+    monkeypatch.setattr(PluginHub, "_TOOL_LIST_NOTIFY_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(PluginHub, "_pending_tool_list_notifications", plugin_hub.weakref.WeakSet())
 
     started = time.monotonic()
     await asyncio.wait_for(PluginHub._notify_mcp_tool_list_changed(), timeout=2.0)
