@@ -16,7 +16,7 @@ namespace MCPForUnity.Editor.Tools
     [McpForUnityTool("execute_code", AutoRegister = false, Group = "scripting_ext")]
     public static class ExecuteCode
     {
-        private const int MaxCodeLength = 50000;
+        internal const int MaxCodeLength = 50000;
         private const int MaxHistoryEntries = 50;
         private const int MaxHistoryCodePreview = 500;
         // Must equal the number of lines WrapUserCode emits before the user's code.

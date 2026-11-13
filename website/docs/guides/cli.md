@@ -153,6 +153,9 @@ unity-mcp shader delete "Assets/Shaders/Old.shader" --force
 ```bash
 # Play mode
 unity-mcp editor play
+unity-mcp editor play --wait-until first_frame --wait-timeout 60
+unity-mcp editor play --on-ready-code 'return UnityEngine.Time.frameCount;'
+unity-mcp editor play-status <job_id>
 unity-mcp editor pause
 unity-mcp editor stop
 
@@ -179,6 +182,19 @@ unity-mcp editor custom-tool "Deploy" --params '{"target": "Android"}'
 unity-mcp tool list
 unity-mcp custom_tool list
 ```
+
+`--wait-until scene_loaded` waits for the active scene to load; `first_frame` also
+waits for `Start` and a completed frame. `--on-ready-code` runs a C# body once
+after first-frame startup, using the same compiler and safety checks as
+`execute_code`. Its result is in `data.on_ready_result`.
+
+Startup waits default to 30 seconds (`--wait-timeout` accepts 1–300). A timeout
+does not stop Play Mode. Poll `editor play-status` with the returned `job_id` on
+the same Unity instance after a timeout or lost reply; resubmitting code creates
+a new request. Pending code expires with its Unity-side wait, while code already
+executing may still finish. Startup jobs survive domain reloads and preserve
+Enter Play Mode settings; completed results are kept for the latest 16 jobs in
+the current Editor session.
 
 #### Screenshot Parameters
 
