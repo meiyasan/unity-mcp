@@ -49,6 +49,10 @@ namespace MCPForUnity.Editor.Tools
             bool refreshTriggered = false;
             bool compileRequested = false;
             int compileCountBefore = EditorStateCache.CompileCount;
+            // Unity's flag can already be up with nothing running (issues #549, #1276):
+            // only a flag raised by this refresh counts as a queued compile.
+            bool unityCompilingBefore = false;
+            try { unityCompilingBefore = EditorApplication.isCompiling; } catch { }
 
             // Validated before anything acts on it: an unknown value would reach the reload path and
             // replace the open scene with the disk version, losing unsaved edits to a typo.
@@ -152,6 +156,27 @@ namespace MCPForUnity.Editor.Tools
             // compile_started is null when nothing was waited for (no compile
             // requested, or wait_for_ready=false), so "not observed" never reads as
             // "did not start".
+            //
+            // A refresh that imported a changed script queues a compile just the same,
+            // with no request made here: Unity's own isCompiling says so at once, while
+            // the pipeline's events (GetActualIsCompiling) say nothing until a later
+            // tick. Answering in that gap reported "idle", the caller's readiness poll
+            // agreed, and the next call ran against the old assemblies. That queued
+            // compile is waited for like a requested one.
+            bool compileQueuedByRefresh = false;
+            if (refreshTriggered && !compileRequested)
+            {
+                try
+                {
+                    compileQueuedByRefresh = !unityCompilingBefore
+                                             && EditorApplication.isCompiling
+                                             && !EditorStateCache.GetActualIsCompiling()
+                                             && EditorStateCache.CompileCount == compileCountBefore;
+                }
+                catch { }
+            }
+            compileRequested |= compileQueuedByRefresh;
+
             bool? compileStarted = null;
             if (compileRequested && waitForReady)
             {

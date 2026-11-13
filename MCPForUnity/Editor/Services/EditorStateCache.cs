@@ -43,6 +43,8 @@ namespace MCPForUnity.Editor.Services
         private const string CompileCountKey = "MCPForUnity.EditorState.CompileCount";
 
         private static bool _domainReloadPending;
+        private static double _reloadExpectedSince = -1;
+        private const double ReloadExpectedSeconds = 10;
         private static long? _domainReloadBeforeUnixMs;
         private static long? _domainReloadAfterUnixMs;
 
@@ -302,6 +304,14 @@ namespace MCPForUnity.Editor.Services
                     // observable at all: the write lands while this domain is alive and
                     // is read back by the next one.
                     SetSessionUnixMs(CompileFinishedKey, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    // The reload this compile leads to begins on a later tick, and until
+                    // beforeAssemblyReload the snapshot read "not compiling, no reload":
+                    // ready, for one tick (a fifth of a second in an unfocused editor),
+                    // in which a caller waiting for the editor was told to go on and had
+                    // its next command dropped by the reload. The reload is expected from
+                    // here; OnUpdate takes that back when none is coming.
+                    _domainReloadPending = true;
+                    _reloadExpectedSince = EditorApplication.timeSinceStartup;
                     ForceUpdate("compilation_finished", isCompiling: false);
                 };
 
@@ -328,6 +338,24 @@ namespace MCPForUnity.Editor.Services
         {
             // Throttle to reduce overhead while keeping the snapshot fresh enough for polling clients.
             double now = EditorApplication.timeSinceStartup;
+
+            // A reload expected since a compile finished (see compilationFinished) is
+            // not coming when Unity no longer says it is compiling: the compile failed,
+            // or it was an AssemblyBuilder build. Read here, outside the pipeline's
+            // events (issue #1485), and given up after ReloadExpectedSeconds, since
+            // Unity's flag can stay up with nothing running (issues #549, #1276).
+            if (_reloadExpectedSince >= 0)
+            {
+                bool coming;
+                try { coming = EditorApplication.isCompiling; } catch { coming = false; }
+                if (!coming || now - _reloadExpectedSince > ReloadExpectedSeconds)
+                {
+                    _reloadExpectedSince = -1;
+                    _domainReloadPending = false;
+                    ForceUpdate("no_domain_reload");
+                }
+            }
+
             // Use GetActualIsCompiling() to avoid isCompiling false positives (issues #549, #1276)
             bool isCompiling = GetActualIsCompiling();
 
