@@ -21,7 +21,7 @@ import pathlib
 import subprocess
 import sys
 
-PKG_NAME = "com.coplaydev.unity-mcp"
+PKG_NAME = "io.glitchr.mcp"
 BRIDGE_SUBPATH = "MCPForUnity"
 
 

@@ -24,7 +24,7 @@ namespace MCPForUnityTests.Editor.Blender
     /// </summary>
     public class McpBlenderBridgePanelTests
     {
-        private const string UxmlPath = "Packages/com.coplaydev.unity-mcp/Editor/Windows/Components/AssetGen/McpAssetGenSection.uxml";
+        private const string UxmlPath = "Packages/io.glitchr.mcp/Editor/Windows/Components/AssetGen/McpAssetGenSection.uxml";
         private static readonly Color Green = new Color(0.4f, 0.8f, 0.4f);
         private static readonly Color Gray = new Color(0.7f, 0.7f, 0.7f);
 

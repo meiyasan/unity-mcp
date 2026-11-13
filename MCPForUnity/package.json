@@ -1,11 +1,11 @@
 {
-  "name": "com.coplaydev.unity-mcp",
+  "name": "io.glitchr.mcp",
   "version": "10.3.0",
-  "displayName": "MCP for Unity",
-  "description": "A bridge that connects AI assistants to Unity via the MCP (Model Context Protocol). Allows AI clients like Claude Code, Cursor, and VSCode to directly control your Unity Editor for enhanced development workflows.\n\nFeatures automated setup wizard, cross-platform support, and seamless integration with popular AI development tools.\n\nJoin Our Discord: https://discord.gg/y4p8KfzrN4",
+  "displayName": "Glitch Art MCP",
+  "description": "Connects AI assistants (Claude Code, Cursor, VS Code and others) to the Unity Editor through the Model Context Protocol.\n\nA fork of MCP for Unity by Coplay and its contributors (MIT license), with fixes and pull requests that were pending upstream. See CREDITS.md.",
   "unity": "2021.3",
-  "documentationUrl": "https://github.com/CoplayDev/unity-mcp",
-  "licensesUrl": "https://github.com/CoplayDev/unity-mcp/blob/main/LICENSE",
+  "documentationUrl": "https://github.com/meiyasan/unity-mcp",
+  "licensesUrl": "https://github.com/meiyasan/unity-mcp/blob/glitchr/LICENSE",
   "dependencies": {
     "com.unity.modules.animation": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",
@@ -27,8 +27,7 @@
     "mcp-client"
   ],
   "author": {
-    "name": "Coplay",
-    "email": "support@coplay.dev",
-    "url": "https://coplay.dev"
+    "name": "Glitch Art",
+    "url": "https://glitchr.io"
   }
 }
