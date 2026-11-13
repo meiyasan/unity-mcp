@@ -203,6 +203,11 @@ class PluginHub(WebSocketEndpoint):
     _last_pong: ClassVar[dict[str, float]] = {}
     # session_id -> ping task
     _ping_tasks: ClassVar[dict[str, asyncio.Task]] = {}
+    # Sessions whose main thread has answered a readiness ping. A session is one websocket connection, and
+    # the plugin reconnects under a new one after every domain reload, so the probe that guards the reload
+    # window runs once per connection instead of before every read (a ping costs an editor tick: 200 ms
+    # while Unity is behind another application).
+    _main_thread_ready: ClassVar[set[str]] = set()
     # project_hash -> (project_name, monotonic disconnect time). A bridge that
     # dropped recently is likely an editor mid-restart; while any entry is fresh,
     # sole-survivor auto-selection must refuse to guess (#1023 family).
@@ -441,6 +446,7 @@ class PluginHub(WebSocketEndpoint):
                     ping_task.cancel()
                 # Clean up last pong tracking
                 cls._last_pong.pop(session_id, None)
+                cls._main_thread_ready.discard(session_id)
                 # Fail-fast any in-flight commands for this session to avoid waiting for COMMAND_TIMEOUT.
                 pending_ids = [
                     command_id
@@ -762,6 +768,7 @@ class PluginHub(WebSocketEndpoint):
                 if old_ping and not old_ping.done():
                     old_ping.cancel()
                 cls._last_pong.pop(evicted_session_id, None)
+                cls._main_thread_ready.discard(evicted_session_id)
                 cancelled_commands = []
                 for command_id, entry in list(cls._pending.items()):
                     if entry.get("session_id") == evicted_session_id:
@@ -1204,6 +1211,7 @@ class PluginHub(WebSocketEndpoint):
             websocket = cls._connections.pop(session_id, None)
             ping_task = cls._ping_tasks.pop(session_id, None)
             cls._last_pong.pop(session_id, None)
+            cls._main_thread_ready.discard(session_id)
             keys_to_remove: list[object] = []
             for key, entry in list(cls._pending.items()):
                 if entry.get("session_id") == session_id:
@@ -1493,6 +1501,7 @@ class PluginHub(WebSocketEndpoint):
             and command_type in cls._FAST_FAIL_COMMANDS
             and command_type != "ping"
             and command_type not in cls._OFF_MAIN_THREAD_COMMANDS
+            and session_id not in cls._main_thread_ready
         ):
             max_wait_s = _read_bounded_wait_env(
                 "UNITY_MCP_SESSION_READY_WAIT_SECONDS", default_s=6.0, max_s=120.0)
@@ -1509,6 +1518,7 @@ class PluginHub(WebSocketEndpoint):
                         result = probe.get("result") if isinstance(
                             probe.get("result"), dict) else {}
                         if result.get("message") == "pong":
+                            cls._main_thread_ready.add(session_id)
                             break
                     await asyncio.sleep(0.1)
                 else:

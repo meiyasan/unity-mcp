@@ -701,7 +701,12 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             string responseJson;
             try
             {
-                if (OffMainThreadCommands.IsOffMainThreadCommand(commandName))
+                if (OffMainThreadCommands.TryAnswerFromCache(commandName, out string cachedJson))
+                {
+                    // A read answered from a cache the main thread keeps current: no editor tick to wait for.
+                    responseJson = cachedJson;
+                }
+                else if (OffMainThreadCommands.IsOffMainThreadCommand(commandName))
                 {
                     // Answered off the main thread: these report on (or clear) a blocked main thread,
                     // so they must not queue behind it. Deliberately outside _executeGate — a

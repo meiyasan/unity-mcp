@@ -259,17 +259,20 @@ async def get_editor_state(ctx: Context) -> MCPResponse:
     try:
         instance_id = unity_section.get("instance_id")
         if isinstance(instance_id, str) and instance_id.strip():
-            from services.resources.project_info import get_project_info
+            # The project root is asked once per instance: the id carries a hash of the project path, so
+            # the root cannot change under it, and asking costs a main-thread call (an editor tick).
+            if not external_changes_scanner.has_project_root(instance_id):
+                from services.resources.project_info import get_project_info
 
-            proj_resp = await get_project_info(ctx)
-            proj = proj_resp.model_dump() if hasattr(
-                proj_resp, "model_dump") else proj_resp
-            proj_data = proj.get("data") if isinstance(proj, dict) else None
-            project_root = proj_data.get("projectRoot") if isinstance(
-                proj_data, dict) else None
-            if isinstance(project_root, str) and project_root.strip():
-                external_changes_scanner.set_project_root(
-                    instance_id, project_root)
+                proj_resp = await get_project_info(ctx)
+                proj = proj_resp.model_dump() if hasattr(
+                    proj_resp, "model_dump") else proj_resp
+                proj_data = proj.get("data") if isinstance(proj, dict) else None
+                project_root = proj_data.get("projectRoot") if isinstance(
+                    proj_data, dict) else None
+                if isinstance(project_root, str) and project_root.strip():
+                    external_changes_scanner.set_project_root(
+                        instance_id, project_root)
 
             ext = external_changes_scanner.update_and_get(instance_id)
 

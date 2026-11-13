@@ -53,6 +53,10 @@ class ExternalChangesScanner:
         if project_root:
             st.project_root = project_root
 
+    def has_project_root(self, instance_id: str) -> bool:
+        """Whether this instance's project root is already known."""
+        return bool(self._get_state(instance_id).project_root)
+
     def clear_dirty(self, instance_id: str) -> None:
         st = self._get_state(instance_id)
         st.dirty = False

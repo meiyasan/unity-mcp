@@ -72,6 +72,9 @@ def _strip_assets(project_path: str) -> str:
     return normalized
 
 
+# How long a client may take to answer a roots/list request before it is treated as having none.
+_CLIENT_ROOTS_TIMEOUT_S = 2.0
+
 class UnityInstanceMiddleware(Middleware):
     """
     Middleware that manages per-session Unity instance selection.
@@ -310,8 +313,18 @@ class UnityInstanceMiddleware(Middleware):
         list_roots = getattr(ctx, "list_roots", None)
         if not callable(list_roots):
             return []
+        # Only a client that declared the roots capability is asked, and never for longer than a
+        # moment: a client that does not answer server requests (no roots support, or no stream
+        # open to receive them) would otherwise hang its first tool call for ever.
         try:
-            roots = await list_roots()
+            client_params = getattr(getattr(ctx, "session", None), "client_params", None)
+            capabilities = getattr(client_params, "capabilities", None)
+            if client_params is not None and getattr(capabilities, "roots", None) is None:
+                return []
+        except Exception:
+            pass
+        try:
+            roots = await asyncio.wait_for(list_roots(), timeout=_CLIENT_ROOTS_TIMEOUT_S)
         except Exception:
             # Client does not implement roots, or the request failed; not fatal.
             return []
@@ -661,8 +674,13 @@ class UnityInstanceMiddleware(Middleware):
         context: MiddlewareContext,
     ) -> set[str] | None:
         ctx = context.fastmcp_context
-        user_id = (await ctx.get_state("user_id")) if config.http_remote_hosted else None
-        active_instance = await ctx.get_state("unity_instance")
+        try:
+            user_id = (await ctx.get_state("user_id")) if config.http_remote_hosted else None
+            active_instance = await ctx.get_state("unity_instance")
+        except RuntimeError:
+            # Listed outside a client request (the hub fingerprinting what it publishes): there is no
+            # session, so no instance to filter by. The unfiltered list is the published one.
+            return None
         project_hashes = self._resolve_candidate_project_hashes(active_instance)
         try:
             sessions_data = await PluginHub.get_sessions(user_id=user_id)

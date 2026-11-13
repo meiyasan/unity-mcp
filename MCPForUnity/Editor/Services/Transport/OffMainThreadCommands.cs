@@ -25,6 +25,38 @@ namespace MCPForUnity.Editor.Services.Transport
                    || string.Equals(commandType, AnswerDialog, StringComparison.OrdinalIgnoreCase);
         }
 
+        internal const string EditorState = "get_editor_state";
+
+        /// <summary>
+        /// Read-only commands answered from a cache on the receive thread while the main thread is alive,
+        /// so a poll does not wait for an editor tick (200 ms behind another application). Unlike the
+        /// commands above they fall back to the main thread: false means "queue it as usual".
+        /// </summary>
+        internal static bool TryAnswerFromCache(string commandType, out string responseJson)
+        {
+            responseJson = null;
+            if (!string.Equals(commandType, EditorState, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!Services.EditorStateCache.TryGetSnapshotOffMainThread(out JObject snapshot))
+                {
+                    return false;
+                }
+
+                var result = new SuccessResponse("Retrieved editor state.", snapshot);
+                responseJson = JsonConvert.SerializeObject(new { status = "success", result });
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         /// <summary>
         /// Handle an off-main-thread command. Returns the serialized transport response envelope.
         /// </summary>
@@ -73,6 +105,11 @@ namespace MCPForUnity.Editor.Services.Transport
             catch
             {
                 return false;
+            }
+
+            if (!string.IsNullOrEmpty(commandType) && TryAnswerFromCache(commandType, out responseJson))
+            {
+                return true;
             }
 
             if (string.IsNullOrEmpty(commandType) || !IsOffMainThreadCommand(commandType))

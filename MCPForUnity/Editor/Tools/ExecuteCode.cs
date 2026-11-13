@@ -663,6 +663,7 @@ namespace MCPForUnity.Editor.Tools
         private static Type _languageVersionEnum;
         private static MethodInfo _parseText;
         private static MethodInfo _createCompilation;
+        private static MethodInfo _addSyntaxTrees;
         private static MethodInfo _createFromFile;
         private static MethodInfo _emit;
         private static object _parseOptions;
@@ -681,6 +682,8 @@ namespace MCPForUnity.Editor.Tools
         public static void ResetCache()
         {
             _isAvailable = null;
+            _baseCompilation = null;
+            _baseCompilationPaths = null;
         }
 
         private static bool Initialize()
@@ -712,6 +715,11 @@ namespace MCPForUnity.Editor.Tools
                 var metadataRefEnumerable = typeof(IEnumerable<>).MakeGenericType(metadataRefBase);
                 _createCompilation = _compilationType.GetMethod("Create", new[] { typeof(string), syntaxTreeEnumerable, metadataRefEnumerable, _compilationOptionsType });
                 if (_createCompilation == null)
+                    return false;
+
+                // CSharpCompilation.AddSyntaxTrees(params SyntaxTree[])
+                _addSyntaxTrees = _compilationType.GetMethod("AddSyntaxTrees", new[] { syntaxTreeBase.MakeArrayType() });
+                if (_addSyntaxTrees == null)
                     return false;
 
                 // MetadataReference.CreateFromFile(string, MetadataReferenceProperties, DocumentationProvider)
@@ -772,6 +780,42 @@ namespace MCPForUnity.Editor.Tools
             }
         }
 
+        private static object _baseCompilation;
+        private static string[] _baseCompilationPaths;
+
+        /// <summary>A compilation holding the references and no source, rebuilt when the reference list changes.</summary>
+        private static object GetBaseCompilation(string[] assemblyPaths)
+        {
+            if (_baseCompilation != null && ReferenceEquals(_baseCompilationPaths, assemblyPaths))
+                return _baseCompilation;
+
+            var listType = typeof(List<>).MakeGenericType(_metadataReferenceType);
+            var refs = (System.Collections.IList)Activator.CreateInstance(listType);
+            var cfParams = _createFromFile.GetParameters();
+
+            foreach (var path in assemblyPaths)
+            {
+                try
+                {
+                    var cfArgs = new object[cfParams.Length];
+                    cfArgs[0] = path; // string path
+                    for (int i = 1; i < cfParams.Length; i++)
+                        cfArgs[i] = cfParams[i].HasDefaultValue ? cfParams[i].DefaultValue : null;
+                    refs.Add(_createFromFile.Invoke(null, cfArgs));
+                }
+                catch
+                {
+                    // Skip assemblies that can't be loaded as metadata
+                }
+            }
+
+            var syntaxTreeBase = Type.GetType("Microsoft.CodeAnalysis.SyntaxTree, Microsoft.CodeAnalysis");
+            var noTrees = Array.CreateInstance(syntaxTreeBase, 0);
+            _baseCompilation = _createCompilation.Invoke(null, new object[] { "MCPDynamic", noTrees, refs, _compilationOptions });
+            _baseCompilationPaths = assemblyPaths;
+            return _baseCompilation;
+        }
+
         public static Assembly Compile(string source, string[] assemblyPaths, out List<string> errors)
         {
             errors = new List<string>();
@@ -781,36 +825,15 @@ namespace MCPForUnity.Editor.Tools
                 // Parse source
                 var syntaxTree = _parseText.Invoke(null, new object[] { source, _parseOptions, null, null, default(System.Threading.CancellationToken) });
 
-                // Build metadata references
-                var metadataRefBase = _metadataReferenceType;
-                var listType = typeof(List<>).MakeGenericType(metadataRefBase);
-                var refs = (System.Collections.IList)Activator.CreateInstance(listType);
-
-                foreach (var path in assemblyPaths)
-                {
-                    try
-                    {
-                        var cfParams = _createFromFile.GetParameters();
-                        var cfArgs = new object[cfParams.Length];
-                        cfArgs[0] = path; // string path
-                        for (int i = 1; i < cfParams.Length; i++)
-                            cfArgs[i] = cfParams[i].HasDefaultValue ? cfParams[i].DefaultValue : null;
-                        var metaRef = _createFromFile.Invoke(null, cfArgs);
-                        refs.Add(metaRef);
-                    }
-                    catch
-                    {
-                        // Skip assemblies that can't be loaded as metadata
-                    }
-                }
-
                 // Build syntax tree array
                 var syntaxTreeBase = Type.GetType("Microsoft.CodeAnalysis.SyntaxTree, Microsoft.CodeAnalysis");
                 var treeArray = Array.CreateInstance(syntaxTreeBase, 1);
                 treeArray.SetValue(syntaxTree, 0);
 
-                // Create compilation
-                var compilation = _createCompilation.Invoke(null, new object[] { "MCPDynamic", treeArray, refs, _compilationOptions });
+                // The references are read once and kept in a compilation without source: reading the
+                // metadata of every loaded assembly is most of a snippet's compile time, and Roslyn
+                // shares it between compilations derived from one another.
+                var compilation = _addSyntaxTrees.Invoke(GetBaseCompilation(assemblyPaths), new object[] { treeArray });
 
                 // Emit to memory
                 using (var ms = new MemoryStream())

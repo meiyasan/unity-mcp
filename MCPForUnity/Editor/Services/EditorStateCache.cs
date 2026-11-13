@@ -539,6 +539,36 @@ namespace MCPForUnity.Editor.Services
             return JObject.FromObject(snapshot);
         }
 
+        /// <summary>
+        /// The cached snapshot without touching Unity's API, for the transport's receive thread: answers
+        /// in a millisecond where the main thread, behind another application, ticks five times a second.
+        /// False (ask the main thread) when there is no snapshot yet, or when the main thread has not ticked
+        /// for <paramref name="maxStallMs"/>: a stalled editor must not be reported from a snapshot it can
+        /// no longer refresh. The stamp is renewed, since a live main thread keeps the snapshot current
+        /// through OnUpdate's change detection.
+        /// </summary>
+        internal static bool TryGetSnapshotOffMainThread(out JObject snapshot, long maxStallMs = 1000)
+        {
+            snapshot = null;
+            if (MainThreadHeartbeat.TickCount == 0 || MainThreadHeartbeat.StallMs > maxStallMs)
+            {
+                return false;
+            }
+
+            lock (LockObj)
+            {
+                if (_cached == null)
+                {
+                    return false;
+                }
+
+                snapshot = (JObject)_cached.DeepClone();
+            }
+
+            snapshot["observed_at_unix_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return true;
+        }
+
         public static JObject GetSnapshot()
         {
             lock (LockObj)
