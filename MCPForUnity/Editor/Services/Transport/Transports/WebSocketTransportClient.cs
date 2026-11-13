@@ -701,7 +701,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             string responseJson;
             try
             {
-                if (OffMainThreadCommands.TryAnswerFromCache(commandName, out string cachedJson))
+                if (OffMainThreadCommands.TryAnswerFromCache(commandName, parameters, out string cachedJson))
                 {
                     // A read answered from a cache the main thread keeps current: no editor tick to wait for.
                     responseJson = cachedJson;

@@ -26,15 +26,22 @@ namespace MCPForUnity.Editor.Services.Transport
         }
 
         internal const string EditorState = "get_editor_state";
+        internal const string ReadConsole = "read_console";
 
         /// <summary>
         /// Read-only commands answered from a cache on the receive thread while the main thread is alive,
         /// so a poll does not wait for an editor tick (200 ms behind another application). Unlike the
         /// commands above they fall back to the main thread: false means "queue it as usual".
         /// </summary>
-        internal static bool TryAnswerFromCache(string commandType, out string responseJson)
+        internal static bool TryAnswerFromCache(string commandType, JObject parameters, out string responseJson)
         {
             responseJson = null;
+            if (string.Equals(commandType, ReadConsole, StringComparison.OrdinalIgnoreCase))
+            {
+                try { return Tools.ConsoleReadCache.TryGet(parameters, out responseJson); }
+                catch { return false; }
+            }
+
             if (!string.Equals(commandType, EditorState, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
@@ -107,7 +114,7 @@ namespace MCPForUnity.Editor.Services.Transport
                 return false;
             }
 
-            if (!string.IsNullOrEmpty(commandType) && TryAnswerFromCache(commandType, out responseJson))
+            if (!string.IsNullOrEmpty(commandType) && TryAnswerFromCache(commandType, parameters, out responseJson))
             {
                 return true;
             }

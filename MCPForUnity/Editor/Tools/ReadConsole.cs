@@ -142,6 +142,13 @@ namespace MCPForUnity.Editor.Tools
 
         // --- Main Handler ---
 
+        /// <summary>Main thread: the console's entry count under its current filters, or -1.</summary>
+        internal static int CurrentEntryCount()
+        {
+            try { return _getCountMethod != null ? (int)_getCountMethod.Invoke(null, null) : -1; }
+            catch { return -1; }
+        }
+
         public static object HandleCommand(JObject @params)
         {
             // Check if ALL required reflection members were successfully initialized.
@@ -178,6 +185,7 @@ namespace MCPForUnity.Editor.Tools
             {
                 if (action == "clear")
                 {
+                    ConsoleReadCache.Invalidate();
                     return ClearConsole();
                 }
                 else if (action == "get")
@@ -198,7 +206,7 @@ namespace MCPForUnity.Editor.Tools
                         types = new List<string> { "error", "warning", "log" }; // Expand 'all'
                     }
 
-                    return GetConsoleEntries(
+                    object answer = GetConsoleEntries(
                         types,
                         count,
                         pageSize,
@@ -207,6 +215,8 @@ namespace MCPForUnity.Editor.Tools
                         format,
                         includeStacktrace
                     );
+                    if (answer is SuccessResponse) ConsoleReadCache.Store(@params, answer);
+                    return answer;
                 }
                 else
                 {
