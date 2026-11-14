@@ -287,7 +287,9 @@ namespace MCPForUnity.Editor.Helpers
             }
 
             // Check if "Server" subdirectory contains pyproject.toml
-            string serverSubDir = System.IO.Path.Combine(checkPath, "Server");
+            // ("Server~" in this repository: the package is its root, and Unity ignores a folder ending in ~.)
+            string serverSubDir = System.IO.Path.Combine(checkPath, "Server~");
+            if (!System.IO.File.Exists(System.IO.Path.Combine(serverSubDir, "pyproject.toml"))) serverSubDir = System.IO.Path.Combine(checkPath, "Server");
             if (System.IO.File.Exists(System.IO.Path.Combine(serverSubDir, "pyproject.toml")))
             {
                 return prefix + serverSubDir;

@@ -18,7 +18,7 @@ from services.registry import get_registered_resources, get_registered_tools
 from utils.module_discovery import discover_modules
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-UNITY_EDITOR_DIR = REPO_ROOT / "MCPForUnity" / "Editor"
+UNITY_EDITOR_DIR = REPO_ROOT / "Editor"   # the package is the repository's root
 
 # C# string literal, honouring backslash escapes.
 CSHARP_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -152,8 +152,8 @@ def test_agent_facing_markdown_references_resources_by_uri(
     getting-started pages name resources as subjects of a sentence rather than
     telling anyone to construct a URI.
     """
-    targets = [REPO_ROOT / "unity-mcp-skill" / "SKILL.md"]
-    targets += sorted((REPO_ROOT / "website" / "docs" /
+    targets = [REPO_ROOT / "unity-mcp-skill~" / "SKILL.md"]
+    targets += sorted((REPO_ROOT / "website~" / "docs" /
                        "reference" / "tools").rglob("*.md"))
     assert len(targets) > 1, "expected the skill and the tool reference pages"
 
