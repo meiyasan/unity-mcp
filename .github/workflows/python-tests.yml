@@ -4,18 +4,18 @@ on:
   push:
     # Exclude beta and main: those branches re-trigger this workflow via
     # workflow_call from beta-release.yml / release.yml. Without the exclusion,
-    # a push to beta that touches Server/** fires this workflow twice for the
+    # a push to beta that touches Server~/** fires this workflow twice for the
     # same SHA, and GitHub auto-cancels the duplicate.
     branches-ignore: [beta, main]
     paths:
-      - Server/**
-      - tools/**
+      - Server~/**
+      - tools~/**
       - .github/workflows/python-tests.yml
   pull_request:
     branches: [main, beta]
     paths:
-      - Server/**
-      - tools/**
+      - Server~/**
+      - tools~/**
       - .github/workflows/python-tests.yml
   workflow_dispatch: {}
   workflow_call:
@@ -46,7 +46,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd Server
+          cd Server~
           # --locked fails if uv.lock disagrees with pyproject.toml instead of silently
           # re-resolving, so a dependency or version bump that forgot `uv lock` shows up here.
           # The dev extra is resolved in the lock too, so pytest runs against pinned versions
@@ -55,19 +55,19 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          cd Server
+          cd Server~
           uv run pytest tests/ -v --tb=short --cov --cov-report=xml --cov-report=html --cov-report=term
 
       - name: Run local harness unit tests (hermetic, no Unity)
         run: |
-          cd Server
-          uv run python -m pytest "$GITHUB_WORKSPACE/tools/tests/" -v --tb=short
+          cd Server~
+          uv run python -m pytest "$GITHUB_WORKSPACE/tools~/tests/" -v --tb=short
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
         if: always()
         with:
-          files: ./Server/coverage.xml
+          files: ./Server~/coverage.xml
           flags: python
           name: python-coverage
           fail_ci_if_error: false
@@ -78,7 +78,7 @@ jobs:
         with:
           name: pytest-results
           path: |
-            Server/.pytest_cache/
-            Server/tests/
-            Server/coverage.xml
-            Server/htmlcov/
+            Server~/.pytest_cache/
+            Server~/tests/
+            Server~/coverage.xml
+            Server~/htmlcov/

@@ -202,6 +202,39 @@ namespace MCPForUnity.Editor.Helpers
             }
         }
 
+        private static string _bundledServer;
+        private static bool _bundledServerSought;
+
+        /// <summary>
+        /// The server that comes with this package: the folder Server~ beside its package.json, when it holds a
+        /// pyproject.toml (an embedded or linked package, or one fetched by Git into the package cache). Null when
+        /// there is none. Found once, on the main thread (as the editor loads): callers on other threads get what
+        /// was found.
+        /// </summary>
+        public static string BundledServerPath()
+        {
+            if (_bundledServerSought) return _bundledServer;
+            try
+            {
+                var info = PackageInfo.FindForAssembly(typeof(AssetPathUtility).Assembly);
+                if (info != null && !string.IsNullOrEmpty(info.resolvedPath))
+                {
+                    string server = Path.Combine(info.resolvedPath, "Server~");
+                    // The real folder, not a link to it: uv keys its build on the path.
+                    if (File.Exists(Path.Combine(server, "pyproject.toml"))) _bundledServer = Path.GetFullPath(server);
+                }
+                _bundledServerSought = true;
+            }
+            catch (Exception)
+            {
+                // Not on the main thread, or the package database is not ready: asked again next time.
+            }
+            return _bundledServer;
+        }
+
+        [UnityEditor.InitializeOnLoadMethod]
+        private static void FindBundledServer() => BundledServerPath();
+
         /// <summary>
         /// Gets the package source for the MCP server (used with uvx --from).
         /// Checks for EditorPrefs override first (supports git URLs, file:// paths, etc.),
@@ -225,6 +258,12 @@ namespace MCPForUnity.Editor.Helpers
                 }
                 return resolved;
             }
+
+            // This package carries its own server (Server~, beside package.json): the one its tools were written
+            // against. The PyPI package below is upstream's server, which lacks what this fork adds; it is only
+            // the fallback when the package's folder cannot be read.
+            string bundled = BundledServerPath();
+            if (bundled != null) return bundled;
 
             // Default to PyPI package (avoids Windows long path issues with git clone)
             string version = GetPackageVersion();

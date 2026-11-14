@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ICON = REPO_ROOT / "docs" / "images" / "coplay-logo.png"
+DEFAULT_ICON = REPO_ROOT / "docs~" / "images" / "coplay-logo.png"
 MANIFEST_TEMPLATE = REPO_ROOT / "manifest.json"
 
 

@@ -1,6 +1,25 @@
+> **Glitch Art MCP** (`io.glitchr.mcp`) is a fork of [MCP for Unity](https://github.com/CoplayDev/unity-mcp) by
+> Coplay and its contributors (MIT; see [CREDITS.md](CREDITS.md)). It is free and stays MIT.
+>
+> **Install:** in Unity, Window > Package Manager > + > Add package from git URL:
+> `https://github.com/meiyasan/unity-mcp.git#glitchr`
+>
+> **What differs from upstream:**
+> - The repository is the Unity package: the package files are at its root, and the server, the test projects and
+>   the docs are in folders Unity ignores (`Server~`, `TestProjects~`, `docs~`, ...).
+> - The package starts the server that comes with it (`Server~`), not the one on PyPI.
+> - Scripts changed while the editor is in the background are compiled there, not at the next focus.
+> - `refresh_unity` waits for the compilation it caused and says whether it failed, with each error's file and line.
+> - `manage_editor`: `step` (advance a paused game by frames), `play_status`, `run_in_background`, `compile_status`;
+>   `play` gets its first frame in an editor that is not the frontmost application.
+> - `send_input`: clicks, drags, scrolls, keys and text sent to one editor window, without moving the pointer.
+> - Editor state and repeated console reads are answered without waiting for the editor's main thread.
+>
+> Everything below is upstream's README; paths in it follow upstream's layout unless marked `~`.
+
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-header-dark.png">
+    <source media="(prefers-color-scheme: dark)" srcset="docs~/images/logo-header-dark.png">
     <img alt="MCP for Unity" src="docs~/images/logo-header-light.png" width="400">
   </picture>
 </p>
@@ -52,7 +71,7 @@ Control the Unity Editor in natural language from any MCP client — create scen
 **Requirements:** Unity **2021.3 LTS → 6.x** · Python **3.10+** (via [`uv`](https://docs.astral.sh/uv/)). Works with **any MCP client** — Claude Desktop & Code, Cursor, VS Code, Windsurf, Cline, Gemini CLI, and more.
 
 1. **Install** — Unity → Package Manager → Add from git URL:
-   `https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main` &nbsp;_(pin `#v10.0.0` for this release, or `openupm add com.coplaydev.unity-mcp`)_
+   `https://github.com/meiyasan/unity-mcp.git#glitchr` &nbsp;_(this fork; upstream's is `https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main`)_
 2. **Configure** — `Window → MCP for Unity → Configure All Detected Clients`.
 3. **Prompt** — *"Create a cube at the origin and add a Rigidbody."* The cube appears in seconds.
 

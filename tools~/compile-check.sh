@@ -17,7 +17,7 @@
 #   UNITY_DATA="C:/Program Files/Unity/Hub/Editor/2021.3.45f2/Editor/Data" UNITY_VERSION=2021.3.45f2 \
 #   EXTRA_REFS=/c/refs tools/compile-check.sh
 # where /c/refs holds Newtonsoft.Json.dll and nunit.framework.dll, e.g. copied from
-# TestProjects/UnityMCPTests/Library/PackageCache/com.unity.nuget.newtonsoft-json@*/Runtime/ and
+# TestProjects~/UnityMCPTests/Library/PackageCache/com.unity.nuget.newtonsoft-json@*/Runtime/ and
 # .../com.unity.ext.nunit@*/net35/unity-custom/. Takes ~1 min per Unity version.
 #
 # Env:
@@ -33,7 +33,7 @@
 # NOT globs on purpose -- Editor/Data holds the entire .NET 4.8 BCL plus vendored libraries
 # (ExCSS.Unity redefines System.Tuple; cscompmgd.dll redefines Microsoft.CSharp.CompilerError)
 # that Unity deliberately does not reference. Regenerate them when defaultVersion changes:
-# open TestProjects/UnityMCPTests in that Editor, then re-derive from the generated csprojs.
+# open TestProjects~/UnityMCPTests in that Editor, then re-derive from the generated csprojs.
 set -uo pipefail
 
 die() { echo "::error::$*" >&2; exit 2; }
@@ -108,7 +108,7 @@ resolve_ref() {
 
 # ------------------------------------------------------------------ compile ----
 # Output assembly names must be exactly MCPForUnity.Runtime / MCPForUnity.Editor:
-# MCPForUnity/Runtime/AssemblyInfo.cs grants InternalsVisibleTo by assembly NAME, so a
+# Runtime/AssemblyInfo.cs grants InternalsVisibleTo by assembly NAME, so a
 # platform suffix in the filename would make Runtime's internals invisible to Editor.
 compile() {
   local name="$1" srcdir="$2" platform="$3" manifest="$4"; shift 4
@@ -126,7 +126,7 @@ compile() {
     # ${var%$'\r'} strips the CR a core.autocrlf checkout appends to every line: a CR inside
     # -define:FOO silently defines the wrong symbol, and inside a LIBCACHE/ name it makes
     # `find -name` match nothing, so the Editor build fails on TestRunner/UI types.
-    while read -r d; do d=${d%$'\r'}; [ -n "$d" ] && echo "-define:$d"; done < "$REPO/tools/compile-defines.txt"
+    while read -r d; do d=${d%$'\r'}; [ -n "$d" ] && echo "-define:$d"; done < "$REPO/tools~/compile-defines.txt"
     version_defines            | while read -r d; do echo "-define:$d"; done
     platform_defines "$platform" | while read -r d; do echo "-define:$d"; done
     while read -r entry; do
@@ -153,10 +153,10 @@ compile() {
 
 failed=0
 for platform in $PLATFORMS; do
-  compile MCPForUnity.Runtime "$REPO/MCPForUnity/Runtime" "$platform" \
-    "$REPO/tools/compile-refs/Runtime.txt" || { failed=1; continue; }
-  compile MCPForUnity.Editor "$REPO/MCPForUnity/Editor" "$platform" \
-    "$REPO/tools/compile-refs/Editor.txt" "$OUT/$platform/MCPForUnity.Runtime.dll" || failed=1
+  compile MCPForUnity.Runtime "$REPO/Runtime" "$platform" \
+    "$REPO/tools~/compile-refs/Runtime.txt" || { failed=1; continue; }
+  compile MCPForUnity.Editor "$REPO/Editor" "$platform" \
+    "$REPO/tools~/compile-refs/Editor.txt" "$OUT/$platform/MCPForUnity.Runtime.dll" || failed=1
 done
 
 [ "$failed" -eq 0 ] || { echo "::error::compile check FAILED"; exit 1; }

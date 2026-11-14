@@ -391,7 +391,7 @@ class TestResolveUnityVersion:
         """Sanity-check the precedence helper against the real (committed)
         tools/unity-versions.json defaultVersion, with an empty project so the
         json branch is exercised."""
-        repo_json = lh.REPO_ROOT / "tools" / "unity-versions.json"
+        repo_json = lh.REPO_ROOT / "tools~" / "unity-versions.json"
         default = lh.read_default_version(repo_json)
         assert isinstance(default, str) and default, "unity-versions.json must have a defaultVersion"
 

@@ -35,13 +35,13 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_JSON = REPO_ROOT / "MCPForUnity" / "package.json"
+PACKAGE_JSON = REPO_ROOT / "package.json"
 MANIFEST_JSON = REPO_ROOT / "manifest.json"
-PYPROJECT_TOML = REPO_ROOT / "Server" / "pyproject.toml"
-UV_LOCK = REPO_ROOT / "Server" / "uv.lock"
-SERVER_README = REPO_ROOT / "Server" / "README.md"
+PYPROJECT_TOML = REPO_ROOT / "Server~" / "pyproject.toml"
+UV_LOCK = REPO_ROOT / "Server~" / "uv.lock"
+SERVER_README = REPO_ROOT / "Server~" / "README.md"
 ROOT_README = REPO_ROOT / "README.md"
-ZH_README = REPO_ROOT / "docs" / "i18n" / "README-zh.md"
+ZH_README = REPO_ROOT / "docs~" / "i18n" / "README-zh.md"
 
 
 def load_package_version() -> str:

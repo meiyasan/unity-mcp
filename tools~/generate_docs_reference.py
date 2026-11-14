@@ -46,8 +46,8 @@ from types import GenericAlias
 from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SERVER_SRC = REPO_ROOT / "Server" / "src"
-WEBSITE_DOCS = REPO_ROOT / "website" / "docs"
+SERVER_SRC = REPO_ROOT / "Server~" / "src"
+WEBSITE_DOCS = REPO_ROOT / "website~" / "docs"
 TOOLS_OUT = WEBSITE_DOCS / "reference" / "tools"
 RESOURCES_OUT = WEBSITE_DOCS / "reference" / "resources"
 

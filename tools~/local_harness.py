@@ -80,7 +80,7 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 _THIS = Path(__file__).resolve()
 REPO_ROOT = _THIS.parents[1]
-SERVER_SRC = REPO_ROOT / "Server" / "src"
+SERVER_SRC = REPO_ROOT / "Server~" / "src"
 
 DEFAULT_PROJECT_PATH = "TestProjects/UnityMCPTests"
 BOOT_METHOD = "MCPForUnity.Editor.McpCiBoot.StartStdioForCi"
@@ -188,7 +188,7 @@ def read_project_version(project_path: str | Path) -> str | None:
 def read_default_version(versions_json: str | Path | None = None) -> str | None:
     """Read defaultVersion from tools/unity-versions.json. Tolerant: returns None
     rather than raising on a missing/garbled file."""
-    path = Path(versions_json) if versions_json else (REPO_ROOT / "tools" / "unity-versions.json")
+    path = Path(versions_json) if versions_json else (REPO_ROOT / "tools~" / "unity-versions.json")
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1136,7 +1136,7 @@ def run_smoke_leg(instance_id: str, junit_path: Path, max_retries: int, retry_ms
     timeout here reaps the child cleanly first). retry_ms is threaded through so
     all three legs share the configured reload-retry delay.
     """
-    smoke = REPO_ROOT / "Server" / "tests" / "e2e" / "bridge_smoke.py"
+    smoke = REPO_ROOT / "Server~" / "tests" / "e2e" / "bridge_smoke.py"
     py = python_exe or sys.executable
     argv = [py, str(smoke), "--instance", instance_id, "--junit", str(junit_path),
             "--max-retries", str(max_retries), "--retry-ms", str(retry_ms)]

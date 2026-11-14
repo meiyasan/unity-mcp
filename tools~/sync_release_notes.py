@@ -34,7 +34,7 @@ from collections import defaultdict
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RELEASES_MD = REPO_ROOT / "website" / "docs" / "releases.md"
+RELEASES_MD = REPO_ROOT / "website~" / "docs" / "releases.md"
 README_MD = REPO_ROOT / "README.md"
 
 OWNER = "CoplayDev"

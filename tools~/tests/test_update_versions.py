@@ -18,8 +18,8 @@ if str(_TOOLS_DIR) not in sys.path:
 
 import update_versions  # noqa: E402
 
-REAL_LOCK = _TOOLS_DIR.parent / "Server" / "uv.lock"
-REAL_PYPROJECT = _TOOLS_DIR.parent / "Server" / "pyproject.toml"
+REAL_LOCK = _TOOLS_DIR.parent / "Server~" / "uv.lock"
+REAL_PYPROJECT = _TOOLS_DIR.parent / "Server~" / "pyproject.toml"
 
 SAMPLE_LOCK = (
     'version = 1\n'

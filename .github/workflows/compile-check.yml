@@ -9,7 +9,7 @@ name: Compile Check (no license)
 #
 # This job never launches the Unity Editor, so it needs no license and no secrets. It
 # pulls the PUBLIC unityci/editor image purely to read reference assemblies out of it,
-# and drives Roslyn (Unity's own bundled csc) directly. See tools/compile-check.sh.
+# and drives Roslyn (Unity's own bundled csc) directly. See tools~/compile-check.sh.
 #
 # It does NOT replace unity-tests.yml: this compiles, it does not run tests.
 
@@ -17,12 +17,12 @@ on:
   push:
     branches-ignore: [beta, main]
     paths: &paths
-      - MCPForUnity/Editor/**
-      - MCPForUnity/Runtime/**
-      - tools/compile-check.sh
-      - tools/compile-defines.txt
-      - tools/compile-refs/**
-      - tools/unity-versions.json
+      - Editor/**
+      - Runtime/**
+      - tools~/compile-check.sh
+      - tools~/compile-defines.txt
+      - tools~/compile-refs/**
+      - tools~/unity-versions.json
       - .github/workflows/compile-check.yml
   pull_request:
     branches: [main, beta]
@@ -38,7 +38,7 @@ concurrency:
 env:
   # Transitive package deps of the Editor asmdef. Not listed in the project manifest --
   # these are the versions Unity resolves into Library/PackageCache. Bump alongside
-  # tools/compile-refs/*.txt when the pinned Unity version changes.
+  # tools~/compile-refs/*.txt when the pinned Unity version changes.
   NEWTONSOFT_VERSION: "3.2.1"
   NUNIT_VERSION: "1.0.6"
 
@@ -56,7 +56,7 @@ jobs:
         id: unity
         run: |
           set -euo pipefail
-          version=$(jq -r '.defaultVersion' tools/unity-versions.json)
+          version=$(jq -r '.defaultVersion' tools~/unity-versions.json)
           [ -n "$version" ] && [ "$version" != "null" ] || { echo "::error::defaultVersion missing"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "image=unityci/editor:ubuntu-$version-base-3" >> "$GITHUB_OUTPUT"

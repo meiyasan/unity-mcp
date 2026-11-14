@@ -100,12 +100,12 @@ def main() -> int:
 
     repo_root = Path(args.repo_root).expanduser().resolve()
     asset_project = Path(args.asset_project).expanduser().resolve(
-    ) if args.asset_project else (repo_root / "TestProjects" / "AssetStoreUploads")
+    ) if args.asset_project else (repo_root / "TestProjects~" / "AssetStoreUploads")
     remote_url = args.remote_url.strip()
     if not remote_url:
         raise RuntimeError("--remote-url must be a non-empty URL")
 
-    source_mcp = repo_root / "MCPForUnity"
+    source_mcp = repo_root 
     if not source_mcp.is_dir():
         raise RuntimeError(
             f"Source MCPForUnity folder not found: {source_mcp}")
