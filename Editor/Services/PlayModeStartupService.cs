@@ -128,6 +128,8 @@ namespace MCPForUnity.Editor.Services
                 Fail(job, "Play Mode stopped before startup completed.");
         }
 
+        private static bool _lentBackground;
+
         private static void OnUpdate()
         {
             var job = Jobs.FirstOrDefault(item => item.Status == "waiting");
@@ -143,7 +145,17 @@ namespace MCPForUnity.Editor.Services
             // Frame count increments at the start of Update. Waiting for a subsequent
             // frame ensures a whole earlier frame (including Start) has completed.
             bool firstFrame = loaded && (long)Time.frameCount - enteredFrame >= 2;
+            // An editor that is not the active application gives the game no frames unless the project runs in the
+            // background: the first frame never came, and this wait ran to its timeout. The game is let run in the
+            // background for as long as the wait lasts, and put back as it was once the frames have come.
+            if (loaded && job.WaitUntil == "first_frame" && !firstFrame && !Application.runInBackground
+                && !EditorApplication.isPaused && !UnityEditorInternal.InternalEditorUtility.isApplicationActive)
+            {
+                Application.runInBackground = true;
+                _lentBackground = true;
+            }
             if (!loaded || (job.WaitUntil == "first_frame" && !firstFrame)) return;
+            if (_lentBackground) { Application.runInBackground = false; _lentBackground = false; }
             job.SceneLoaded = true;
             job.FirstFrameComplete = firstFrame;
             job.SceneName = scene.name;
@@ -177,6 +189,7 @@ namespace MCPForUnity.Editor.Services
 
         private static void Fail(StartupJob job, string reason)
         {
+            if (_lentBackground) { Application.runInBackground = false; _lentBackground = false; }
             job.Status = "failed";
             job.Error = reason;
             job.Code = null;

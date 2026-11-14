@@ -11,7 +11,7 @@ from transport.legacy.unity_connection import async_send_command_with_retry
 from services.play_mode_startup import has_startup_options, run_play_startup
 
 @mcp_for_unity_tool(
-    description="Controls and queries the Unity editor's state and settings. Read-only actions: telemetry_status, telemetry_ping, get_play_mode_startup. Modifying actions: play, pause, stop, set_active_tool, add_tag, remove_tag, add_layer, remove_layer, deploy_package, restore_package, undo, redo. play can wait_until='scene_loaded' or 'first_frame', with wait_timeout (1-300 seconds; default 30). on_ready_code is a C# body executed once after first-frame startup using execute_code's compiler and safety checks; its result is returned as data.on_ready_result. Startup state survives domain reload without changing Enter Play Mode settings. After a timeout or disconnected reply, poll get_play_mode_startup with job_id instead of resubmitting code. Scene loading alone does not guarantee Start methods have run; use first_frame or on_ready_code for that. For prefab editing (open/save/close prefab stage), use manage_prefabs. deploy_package copies the configured MCPForUnity source folder into the project's installed package location (triggers recompile, no confirmation dialog). restore_package reverts to the pre-deployment backup. undo/redo perform Unity editor undo/redo and return the affected group name.",
+    description="Controls and queries the Unity editor's state and settings. Read-only actions: telemetry_status, telemetry_ping, get_play_mode_startup, play_status (playing, paused, frame, game time, scene), compile_status (whether scripts compile now, and the last compilation: failed or not, each error with file and line). Modifying actions: play, pause, stop, step (pause the running game and advance it by `frames` frames: the way to drive and observe a game while Unity is not the frontmost application, where a running game gets no frames), run_in_background (let the running game take frames while the editor is in the background, for this run), set_active_tool, add_tag, remove_tag, add_layer, remove_layer, deploy_package, restore_package, undo, redo. play can wait_until='scene_loaded' or 'first_frame', with wait_timeout (1-300 seconds; default 30). on_ready_code is a C# body executed once after first-frame startup using execute_code's compiler and safety checks; its result is returned as data.on_ready_result. Startup state survives domain reload without changing Enter Play Mode settings. After a timeout or disconnected reply, poll get_play_mode_startup with job_id instead of resubmitting code. Scene loading alone does not guarantee Start methods have run; use first_frame or on_ready_code for that. For prefab editing (open/save/close prefab stage), use manage_prefabs. deploy_package copies the configured MCPForUnity source folder into the project's installed package location (triggers recompile, no confirmation dialog). restore_package reverts to the pre-deployment backup. undo/redo perform Unity editor undo/redo and return the affected group name.",
     annotations=ToolAnnotations(
         title="Manage Editor",
         readOnlyHint=False,
@@ -20,7 +20,7 @@ from services.play_mode_startup import has_startup_options, run_play_startup
 )
 async def manage_editor(
     ctx: Context,
-    action: Annotated[Literal["telemetry_status", "telemetry_ping", "play", "get_play_mode_startup", "pause", "stop", "set_active_tool", "add_tag", "remove_tag", "add_layer", "remove_layer", "deploy_package", "restore_package", "undo", "redo"], "Get and update the Unity Editor state. deploy_package copies the configured MCPForUnity source into the project's package location (triggers recompile). restore_package reverts the last deployment from backup. undo/redo perform editor undo/redo. For prefab editing (open/save/close prefab stage), use manage_prefabs."],
+    action: Annotated[Literal["telemetry_status", "telemetry_ping", "play", "get_play_mode_startup", "play_status", "pause", "stop", "step", "run_in_background", "compile_status", "set_active_tool", "add_tag", "remove_tag", "add_layer", "remove_layer", "deploy_package", "restore_package", "undo", "redo"], "Get and update the Unity Editor state. deploy_package copies the configured MCPForUnity source into the project's package location (triggers recompile). restore_package reverts the last deployment from backup. undo/redo perform editor undo/redo. For prefab editing (open/save/close prefab stage), use manage_prefabs."],
     tool_name: Annotated[str,
                          "Tool name when setting active tool"] | None = None,
     tag_name: Annotated[str,
@@ -31,6 +31,9 @@ async def manage_editor(
     on_ready_code: Annotated[str, "C# body to execute once after first-frame startup on play. Uses execute_code's default compiler and safety checks."] | None = None,
     wait_timeout: Annotated[float, "Maximum startup wait in seconds (1-300; default 30). A timeout does not stop Play Mode; poll the returned job_id."] | None = None,
     job_id: Annotated[str, "Startup job id returned by play; required for get_play_mode_startup."] | None = None,
+    frames: Annotated[int, "For step: how many frames to advance (1-5000; default 1). The game is left paused."] | None = None,
+    enabled: Annotated[bool, "For run_in_background: true (default) lets the running game take frames while the editor is in the background."] | None = None,
+    include_warnings: Annotated[bool, "For compile_status: also return the compiler warnings' text (their count is always given)."] | None = None,
 ) -> dict[str, Any]:
     # Get active instance from request state (injected by middleware)
     unity_instance = await get_unity_instance_from_context(ctx)
@@ -58,6 +61,9 @@ async def manage_editor(
             "onReadyCode": on_ready_code,
             "waitTimeout": wait_timeout,
             "jobId": job_id,
+            "frames": frames,
+            "enabled": enabled,
+            "includeWarnings": include_warnings,
         }
         params = {k: v for k, v in params.items() if v is not None}
 

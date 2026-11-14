@@ -95,3 +95,41 @@ def test_undo_omits_none_params(mock_unity):
     assert "layerName" not in params
 
 
+
+
+# ── Play mode driven from the background, compile status ─────────────
+
+
+def test_step_forwards_its_frames(mock_unity):
+    result = asyncio.run(manage_editor(SimpleNamespace(), action="step", frames=60))
+    assert result["success"] is True
+    assert mock_unity["params"] == {"action": "step", "frames": 60}
+
+
+def test_play_status_and_compile_status_send_nothing_else(mock_unity):
+    asyncio.run(manage_editor(SimpleNamespace(), action="play_status"))
+    assert mock_unity["params"] == {"action": "play_status"}
+    asyncio.run(manage_editor(SimpleNamespace(), action="compile_status", include_warnings=True))
+    assert mock_unity["params"] == {"action": "compile_status", "includeWarnings": True}
+
+
+def test_run_in_background_forwards_enabled(mock_unity):
+    asyncio.run(manage_editor(SimpleNamespace(), action="run_in_background", enabled=False))
+    assert mock_unity["params"] == {"action": "run_in_background", "enabled": False}
+
+
+def test_refresh_reports_a_failed_compilation(monkeypatch):
+    import services.tools.refresh_unity as refresh_mod
+
+    async def fake_send(send_fn, unity_instance, tool_name, params, **kwargs):
+        assert tool_name == "manage_editor" and params == {"action": "compile_status"}
+        return {"success": True, "data": {"is_compiling": False, "compilation_failed": True, "last_compilation": {
+            "failed": True, "error_count": 1, "warning_count": 0,
+            "errors": [{"file": "Assets/A.cs", "line": 3, "message": "error CS1002: ; expected"}]}}}
+
+    monkeypatch.setattr(refresh_mod, "_in_pytest", lambda: False)
+    monkeypatch.setattr(refresh_mod.unity_transport, "send_with_unity_instance", fake_send)
+    out = {"success": True, "message": "Refresh complete; editor is ready.", "data": {}}
+    asyncio.run(refresh_mod._attach_compilation(out, "unity-instance-1"))
+    assert out["data"]["compilation"]["failed"] is True
+    assert "FAILED to compile" in out["message"] and "Assets/A.cs(3)" in out["message"]

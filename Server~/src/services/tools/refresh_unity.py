@@ -302,6 +302,7 @@ async def refresh_unity(
         if ready_confirmed:
             out = _report_ready({"success": True, "data": {"recovered_from_disconnect": True}}, waited_s)
             out["message"] = "Refresh recovered after Unity disconnect/retry; editor is ready."
+            await _attach_compilation(out, unity_instance)
             return MCPResponse(**out)
         # Only reachable for a compile whose reload dropped the connection with wait_for_ready=false:
         # nothing waited, so the editor is very likely still reloading.
@@ -316,9 +317,41 @@ async def refresh_unity(
         )
 
     if ready_confirmed:
-        return MCPResponse(**_report_ready(response_dict, waited_s))
+        out = _report_ready(response_dict, waited_s)
+        await _attach_compilation(out, unity_instance)
+        return MCPResponse(**out)
 
     return MCPResponse(**response_dict) if isinstance(response, dict) else response
+
+
+async def _attach_compilation(out: dict[str, Any], unity_instance: str | None) -> None:
+    """Add what the last script compilation said to a refresh that waited for the editor.
+
+    A refresh that compiled answers "ready" whether the compilation passed or failed (a failed one reloads
+    nothing, so the editor is ready at once, on the old assemblies). The caller then had to read the console to
+    learn which. Here the editor is asked once more, and the answer says it: ``data.compilation`` holds
+    failed, error_count, warning_count and the errors with file and line, and a failure is put in the message.
+    Best effort: an older plugin without the action, or a lost reply, leaves the response as it was.
+    """
+    if _in_pytest():
+        return
+    try:
+        reply = await unity_transport.send_with_unity_instance(
+            _legacy_conn.async_send_command_with_retry, unity_instance, "manage_editor", {"action": "compile_status"})
+        reply = reply if isinstance(reply, dict) else (reply.model_dump() if hasattr(reply, "model_dump") else None)
+        data = (reply or {}).get("data") if isinstance(reply, dict) and reply.get("success") else None
+        last = (data or {}).get("last_compilation") if isinstance(data, dict) else None
+        if not isinstance(last, dict):
+            return
+        out.setdefault("data", {})["compilation"] = last
+        if data.get("compilation_failed") or last.get("failed"):
+            first = (last.get("errors") or [{}])[0]
+            where = f" First: {first.get('file')}({first.get('line')}): {first.get('message')}" if first else ""
+            out["message"] = (f"Editor is ready, but scripts FAILED to compile ({last.get('error_count')} error(s)): "
+                              f"the old code is still loaded.{where}")
+            out["data"]["hint"] = "Fix the errors in data.compilation.errors and refresh again."
+    except Exception as exc:  # the refresh itself succeeded: its report must not be lost to this
+        logger.debug("refresh_unity: compile status not attached: %s", exc)
 
 
 def _report_ready(response_dict: dict[str, Any], waited_s: float) -> dict[str, Any]:

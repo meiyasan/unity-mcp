@@ -24,6 +24,25 @@ namespace MCPForUnity.Editor.Tools
         /// <summary>
         /// Main handler for editor management actions.
         /// </summary>
+        // Where the game is: playing or not, paused, the frame and the time it has reached, the scene.
+        private static JObject PlayState()
+        {
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            return new JObject
+            {
+                ["is_playing"] = EditorApplication.isPlaying,
+                ["is_paused"] = EditorApplication.isPaused,
+                ["is_changing"] = EditorApplication.isPlayingOrWillChangePlaymode != EditorApplication.isPlaying,
+                ["frame"] = EditorApplication.isPlaying ? Time.frameCount : 0,
+                ["game_time"] = EditorApplication.isPlaying ? Math.Round(Time.time, 4) : 0.0,
+                ["time_scale"] = Time.timeScale,
+                ["runs_in_background"] = Application.runInBackground,
+                ["editor_is_active"] = UnityEditorInternal.InternalEditorUtility.isApplicationActive,
+                ["scene"] = scene.path,
+                ["scene_dirty"] = scene.isDirty,
+            };
+        }
+
         public static object HandleCommand(JObject @params)
         {
             // Step 1: Null parameter guard (consistent across all tools)
@@ -77,12 +96,65 @@ namespace MCPForUnity.Editor.Tools
                     {
                         return new ErrorResponse($"Error pausing/resuming game: {e.Message}");
                     }
+                case "play_status":
+                    return new SuccessResponse("Play mode state.", PlayState());
+                case "step":
+                    // Frames, one after the other, with the game paused between calls. An editor that is not the
+                    // active application gives a running game no frames (unless the project runs in the
+                    // background): stepping is how a game is driven and observed from here whatever has the focus.
+                    try
+                    {
+                        if (!EditorApplication.isPlaying) return new ErrorResponse("Cannot step: not in play mode.");
+                        int frames = Mathf.Clamp(p.GetInt("frames") ?? 1, 1, 5000);
+                        EditorApplication.isPaused = true;
+                        int before = Time.frameCount; float timeBefore = Time.time;
+                        var clock = System.Diagnostics.Stopwatch.StartNew();
+                        int done = 0;
+                        // Bounded in real time too: a heavy game's frames must not hold the editor for minutes.
+                        for (; done < frames && clock.ElapsedMilliseconds < 20000 && EditorApplication.isPlaying; done++) EditorApplication.Step();
+                        var state = PlayState();
+                        state["frames_stepped"] = Time.frameCount - before;
+                        state["frames_asked"] = frames;
+                        state["game_seconds_advanced"] = Math.Round(Time.time - timeBefore, 4);
+                        state["real_ms"] = clock.ElapsedMilliseconds;
+                        return new SuccessResponse(done < frames ? $"Stepped {done} of {frames} frames (stopped after 20 s)." : $"Stepped {done} frames; the game is paused.", state);
+                    }
+                    catch (Exception e)
+                    {
+                        return new ErrorResponse($"Error stepping the game: {e.Message}");
+                    }
+                case "run_in_background":
+                    // Whether the running game gets frames while the editor is not the active application. For
+                    // this run only: Unity sets it again from the Player settings at the next Play.
+                    try
+                    {
+                        if (!EditorApplication.isPlaying) return new ErrorResponse("run_in_background applies to a running game: enter play mode first.");
+                        Application.runInBackground = p.GetBool("enabled", true);
+                        return new SuccessResponse(Application.runInBackground ? "The game runs while the editor is in the background." : "The game waits while the editor is in the background.", PlayState());
+                    }
+                    catch (Exception e)
+                    {
+                        return new ErrorResponse($"Error setting run_in_background: {e.Message}");
+                    }
+                case "compile_status":
+                    {
+                        var last = CompileResults.Last(p.GetBool("includeWarnings", false));
+                        var data = new JObject
+                        {
+                            ["is_compiling"] = EditorApplication.isCompiling,
+                            ["compilation_failed"] = EditorUtility.scriptCompilationFailed,
+                            ["last_compilation"] = last,
+                        };
+                        return new SuccessResponse(last == null ? "No compilation has finished in this editor session." : (bool)last["failed"] ? $"The last compilation failed with {last["error_count"]} error(s)." : "The last compilation succeeded.", data);
+                    }
                 case "stop":
                     try
                     {
                         PlayModeStartupService.CancelWaiting();
                         if (EditorApplication.isPlaying || EditorApplication.isPlayingOrWillChangePlaymode)
                         {
+                            // Not left paused: a paused editor enters the next Play paused, and looks frozen.
+                            EditorApplication.isPaused = false;
                             EditorApplication.isPlaying = false;
                             return new SuccessResponse("Exited play mode.");
                         }
